@@ -21,14 +21,13 @@ If this **repository** helps you, give it a ⭐ to show your support and help ot
   - [Composite Actions](#1-composite-actions)  
   - [JavaScript Actions (To be discussed in next lecture)](#2-javascript-actions-to-be-discussed-in-next-lecture)  
   - [Docker Actions (To be discussed in next lecture)](#3-docker-actions-to-be-discussed-in-next-lecture)  
-
 - [**Demo 1:** Creating a Composite Action by Chaining Existing GitHub Actions](#demo-1-creating-a-composite-action-by-chaining-existing-github-actions)  
   - [Step 1: Repository Setup and Authentication](#step-1-repository-setup-and-authentication)  
   - [Step 2: Preparing the Application](#step-2-preparing-the-application)  
     - [Step 2.1: Create the Flask Application](#step-21-create-the-flask-application)  
     - [Step 2.2: Create the Dockerfile](#step-22-create-the-dockerfile)  
     - [Step 2.3: Create the Requirements File](#step-23-create-the-requirements-file)  
-  - [Step 3: Preparing Docker Hub for Authentication and Image Publishing](#step-3-preparing-docker-hub-for-authentication-and-image-publishing)  
+  - [Step 3: Preparing Docker Hub for Authentication and Image Publishing](#step-3-preparing-docker-hub-for-authentication-and-image-publishing) 
     - [Step 3.1: Creating a Private Docker Hub Repository](#step-31-creating-a-private-docker-hub-repository)  
     - [Step 3.2: Creating a Docker Hub Personal Access Token (PAT)](#step-32-creating-a-docker-hub-personal-access-token-pat)  
   - [Step 4: Configuring Repository Variables & Secrets](#step-4-configuring-repository-variables--secrets)  
@@ -37,7 +36,6 @@ If this **repository** helps you, give it a ⭐ to show your support and help ot
   - [Step 7: Running the Workflow](#step-7-running-the-workflow)  
   - [Step 8: Observing Workflow Execution](#step-8-observing-workflow-execution) 
   - [Demo 1 Key Takeaways](#demo-1-key-takeaways) 
-
 - [**Demo 2:** Creating a Composite Action by Chaining Multiple Shell Commands](#demo-2-creating-a-composite-action-by-chaining-multiple-shell-commands)  
   - [Repository Structure](#repository-structure)  
   - [Step 1: Create the Composite Action](#step-1-create-the-composite-action)  
@@ -46,7 +44,6 @@ If this **repository** helps you, give it a ⭐ to show your support and help ot
   - [Step 4: Execute the Workflow](#step-4-execute-the-workflow)  
   - [Step 5: Observe the Workflow Execution](#step-5-observe-the-workflow-execution)  
   - [Demo 2 Key Takeaways](#demo-2-key-takeaways) 
-
 - [Conclusion](#conclusion)  
 - [References](#references)  
 
