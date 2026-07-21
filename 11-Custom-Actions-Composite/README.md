@@ -15,7 +15,8 @@ If this **repository** helps you, give it a ⭐ to show your support and help ot
 
 - [Introduction](#introduction)  
 - [Why GitHub Custom Actions](#why-github-custom-actions)  
-- [Challenge: Organization-specific Automation](#challenge-organization-specific-automation)  
+- [Challenge 1: Organization-specific Automation](#challenge-1-organization-specific-automation)  
+- [Challenge 2: Repetitive Workflow Logic](#challenge-2-repetitive-workflow-logic)  
 - [What are GitHub Custom Actions?](#what-are-github-custom-actions)  
 - [Types of GitHub Custom Actions](#types-of-github-custom-actions)  
   - [Composite Actions](#1-composite-actions)  
@@ -27,9 +28,9 @@ If this **repository** helps you, give it a ⭐ to show your support and help ot
     - [Step 2.1: Create the Flask Application](#step-21-create-the-flask-application)  
     - [Step 2.2: Create the Dockerfile](#step-22-create-the-dockerfile)  
     - [Step 2.3: Create the Requirements File](#step-23-create-the-requirements-file)  
-  - [Step 3: Preparing Docker Hub for Authentication and Image Publishing](#step-3-preparing-docker-hub-for-authentication-and-image-publishing) 
+  - [Step 3: Preparing Docker Hub for Authentication and Image Publishing](#step-3-preparing-docker-hub-for-authentication-and-image-publishing)  
     - [Step 3.1: Creating a Private Docker Hub Repository](#step-31-creating-a-private-docker-hub-repository)  
-    - [Step 3.2: Creating a Docker Hub Personal Access Token (PAT)](#step-32-creating-a-docker-hub-personal-access-token-pat)  
+    - [Step 3.2: Creating a Docker Hub Personal Access Token (PAT)](#step-32-creating-a-docker-hub-personal-access-token-pat) 
   - [Step 4: Configuring Repository Variables & Secrets](#step-4-configuring-repository-variables--secrets)  
   - [Step 5: Creating a Composite Action](#step-5-creating-a-composite-action)  
   - [Step 6: Commit and Push the Changes](#step-6-commit-and-push-the-changes)  
@@ -117,7 +118,7 @@ Every organization has its own **internal platforms**, **deployment processes**,
 For example:
 
 ```text
-Authenticate with Internal Platform → Validate Organization Policies → Deploy Application → Update Internal CMDB → Notify Internal Systems
+Authenticate with Internal Platform → Validate Organization Policies → Build → Deploy Application → Update Internal CMDB → Notify Internal Systems
 ```
 
 Actions for such organization-specific workflows typically do not exist in the GitHub Marketplace.
@@ -129,41 +130,75 @@ Let's understand these challenges in more detail.
 > **Note:** I've used the **latest stable Action versions** available at the time of writing this guide. Since GitHub Actions are updated over time, always check the Action's **official documentation** or GitHub repository to confirm that you're using the **latest recommended version** before implementing it in production.
 ---
 
-### Challenge: Organization-specific Automation
 
-Although the GitHub Marketplace contains thousands of Actions, every organization eventually encounters tasks that are **unique to its own business**, **platform**, or **engineering practices**.
+### Challenge 1: Organization-specific Automation
+
+Although the **GitHub Marketplace** contains thousands of Actions, every organization eventually encounters tasks that are **unique to its business**, **platform**, or **engineering practices**. These organization-specific processes often cannot be implemented using existing GitHub or Marketplace Actions alone.
 
 For example, an organization may need to:
 
 ```text
-Authenticate with Internal Platform → Validate Organization Policies → Deploy Application → Update Internal CMDB → Notify Internal Systems
+Authenticate with Internal Platform → Validate Organization Policies → Build Application → Deploy Application → Update Internal CMDB → Notify Internal Systems
 ```
 
-Since these workflows are organization-specific, an appropriate Action may not already exist in the GitHub Marketplace.
+Since these workflows are **specific to the organization**, an appropriate Action may not already exist in the GitHub Marketplace.
 
-As a result, engineers often implement the required logic directly inside workflow YAML files using lengthy shell scripts and commands.
+As a result, engineers often implement the required logic directly inside workflow YAML files using lengthy **Python**, **Shell**, or **Bash** scripts. In this example, we're using **Python** scripts, but the same concept applies to **Shell (Bash)** scripts and scripts written for other shells.
 
 ```yaml
 run: |
   python authenticate.py
   python validate.py
+  python build.py
   python deploy.py
   python update_cmdb.py
   python notify.py
 ```
 
-Initially, this may seem reasonable.
+While this approach works for an individual workflow, the same organization-specific implementation is often required across **multiple workflows** and **multiple repositories**. Teams therefore end up copying the same scripts and commands throughout their CI/CD pipelines.
 
-However, as more workflows and repositories require the same functionality, organizations begin copying the same implementation across multiple workflows.
+This introduces several maintenance challenges:
 
-This introduces several maintenance problems:
+* **Duplicate implementation** across workflows and repositories.
+* **Multiple repositories** must be updated whenever the implementation changes.
+* **Inconsistent implementations** across development teams.
+* **Long, complex, and difficult-to-maintain** workflows.
 
-* Every workflow contains duplicate logic.
-* Updating the implementation requires changes in multiple repositories.
-* Different teams may implement the same process differently.
-* Workflows become longer, harder to read, and more difficult to maintain.
+> **Note:** A **Shell script** is the generic term for a script written to run in a Unix/Linux shell. A **Bash script** is a specific type of Shell script written for the **Bourne Again Shell (Bash)**. Similarly, there are Shell scripts written for other shells such as **Zsh (Z Shell)**, **Ksh (Korn Shell)**, and **Sh (POSIX/Bourne Shell)**. Throughout this course, we use **Bash**, as it is the most widely used shell in Linux and CI/CD environments.
 
-Organizations therefore require a mechanism to package **organization-specific workflow logic** into reusable building blocks that can be shared across workflows and repositories.
+---
+
+### Challenge 2: Repetitive Workflow Logic
+
+Not every challenge involves **organization-specific automation**. In many cases, the required functionality already exists as **GitHub Actions**, **Marketplace Actions**, or **Shell/Bash scripts**.
+
+For example, multiple workflows may need to perform the same sequence of tasks:
+
+```text
+Checkout Code → Configure AWS Credentials → Login to Docker → Build & Push Image → Security Scan → Publish Artifact
+```
+
+Or they may repeatedly execute the same set of shell commands:
+
+```yaml
+run: |
+  npm install
+  npm test
+  npm run lint
+  npm run build
+  npm audit
+```
+
+Initially, implementing these steps directly within each workflow may seem reasonable. However, as the number of workflows grows, the same implementation is often copied across multiple workflows and repositories.
+
+This introduces several maintenance challenges:
+
+* **Duplicate workflow logic** across multiple workflows.
+* **Multiple workflow files** must be updated whenever the implementation changes.
+* **Long, verbose, and difficult-to-maintain** workflow definitions.
+* **Reduced readability**, making it harder to understand the high-level purpose of a workflow.
+
+Whether the challenge is **organization-specific automation** or **repetitive workflow logic**, organizations need a way to package commonly used implementation into **reusable building blocks** that can be shared across **multiple workflows** and **repositories**. This is exactly the problem that **GitHub Custom Actions** are designed to solve.
 
 ---
 
@@ -1967,22 +2002,22 @@ In the next lecture, we will build upon this foundation by exploring **JavaScrip
 
 * **GitHub Documentation**
 
-  * [https://docs.github.com/en/actions](https://docs.github.com/en/actions)  
+  * [https://docs.github.com/en/actions](https://docs.github.com/en/actions)
 
 * **Creating Composite Actions**
 
-  * [https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-composite-action](https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-composite-action)  
+  * [https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-composite-action](https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-composite-action)
 
 * **Creating JavaScript Actions**
 
-  * [https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-javascript-action](https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-javascript-action)  
+  * [https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-javascript-action](https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-javascript-action)
 
 * **Creating Docker Actions**
 
-  * [https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-docker-container-action](https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-docker-container-action)  
+  * [https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-docker-container-action](https://docs.github.com/en/actions/sharing-automations/creating-actions/creating-a-docker-container-action)
 
 * **GitHub Marketplace**
 
-  * [https://github.com/marketplace?type=actions](https://github.com/marketplace?type=actions)  
+  * [https://github.com/marketplace?type=actions](https://github.com/marketplace?type=actions)
 
 ---
