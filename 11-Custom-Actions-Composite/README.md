@@ -29,13 +29,13 @@ If this **repository** helps you, give it a ⭐ to show your support and help ot
     - [Step 2.2: Create the Dockerfile](#step-22-create-the-dockerfile)  
     - [Step 2.3: Create the Requirements File](#step-23-create-the-requirements-file)  
   - [Step 3: Preparing Docker Hub for Authentication and Image Publishing](#step-3-preparing-docker-hub-for-authentication-and-image-publishing)  
-    - [Step 3.1: Creating a Private Docker Hub Repository](#step-31-creating-a-private-docker-hub-repository)  
-    - [Step 3.2: Creating a Docker Hub Personal Access Token (PAT)](#step-32-creating-a-docker-hub-personal-access-token-pat) 
+    - [Step 3.1: Creating a Private Docker Hub Repository](#step-31-creating-a-private-docker-hub-repository) 
+    - [Step 3.2: Creating a Docker Hub Personal Access Token (PAT)](#step-32-creating-a-docker-hub-personal-access-token-pat)  
   - [Step 4: Configuring Repository Variables & Secrets](#step-4-configuring-repository-variables--secrets)  
   - [Step 5: Creating a Composite Action](#step-5-creating-a-composite-action)  
   - [Step 6: Commit and Push the Changes](#step-6-commit-and-push-the-changes)  
   - [Step 7: Running the Workflow](#step-7-running-the-workflow)  
-  - [Step 8: Observing Workflow Execution](#step-8-observing-workflow-execution) 
+  - [Step 8: Observing Workflow Execution](#step-8-observing-workflow-execution)  
   - [Demo 1 Key Takeaways](#demo-1-key-takeaways) 
 - [**Demo 2:** Creating a Composite Action by Chaining Multiple Shell Commands](#demo-2-creating-a-composite-action-by-chaining-multiple-shell-commands)  
   - [Repository Structure](#repository-structure)  
@@ -177,7 +177,6 @@ For example, multiple workflows may repeatedly invoke the same sequence of GitHu
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: aws-actions/configure-aws-credentials@v6
 - uses: docker/login-action@v4
 - uses: docker/build-push-action@v7
 - uses: aquasecurity/trivy-action@v0
