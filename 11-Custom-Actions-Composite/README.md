@@ -168,17 +168,23 @@ This introduces several maintenance challenges:
 
 ---
 
-### Challenge 2: Repetitive Workflow Logic
 
-Not every challenge involves **organization-specific automation**. In many cases, the required functionality already exists as **GitHub Actions**, **Marketplace Actions**, or **Shell/Bash scripts**.
+## Challenge 2: Repetitive Workflow Logic
 
-For example, multiple workflows may need to perform the same sequence of tasks:
+Not every challenge involves **organization-specific automation**. In many cases, the required functionality already exists as **GitHub Actions**, **Marketplace Actions**, or **Shell/Bash scripts**. However, the same implementation is often repeated across multiple workflows.
 
-```text
-Checkout Code → Configure AWS Credentials → Login to Docker → Build & Push Image → Security Scan → Publish Artifact
+For example, multiple workflows may repeatedly invoke the same sequence of GitHub Actions:
+
+```yaml
+- uses: actions/checkout@v7
+- uses: aws-actions/configure-aws-credentials@v6
+- uses: docker/login-action@v4
+- uses: docker/build-push-action@v7
+- uses: aquasecurity/trivy-action@v0
+- uses: actions/upload-artifact@v4
 ```
 
-Or they may repeatedly execute the same set of shell commands:
+Similarly, they may repeatedly execute the same set of shell commands:
 
 ```yaml
 run: |
@@ -189,7 +195,7 @@ run: |
   npm audit
 ```
 
-Initially, implementing these steps directly within each workflow may seem reasonable. However, as the number of workflows grows, the same implementation is often copied across multiple workflows and repositories.
+While implementing these steps directly within a workflow may seem reasonable, the same implementation is often copied across **multiple workflows** and **repositories** as projects grow.
 
 This introduces several maintenance challenges:
 
@@ -201,6 +207,7 @@ This introduces several maintenance challenges:
 Whether the challenge is **organization-specific automation** or **repetitive workflow logic**, organizations need a way to package commonly used implementation into **reusable building blocks** that can be shared across **multiple workflows** and **repositories**. This is exactly the problem that **GitHub Custom Actions** are designed to solve.
 
 ---
+
 
 ### What are GitHub Custom Actions?
 
