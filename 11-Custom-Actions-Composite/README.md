@@ -169,11 +169,17 @@ This introduces several maintenance challenges:
 ---
 
 
-## Challenge 2: Repetitive Workflow Logic
+### Challenge 2: Repetitive Workflow Logic
 
 Not every challenge involves **organization-specific automation**. In many cases, the required functionality already exists as **GitHub Actions**, **Marketplace Actions**, or **Shell/Bash scripts**. However, the same implementation is often repeated across multiple workflows.
 
-For example, multiple workflows may repeatedly invoke the same sequence of GitHub Actions:
+For example, multiple workflows may repeatedly implement the same CI/CD pipeline:
+
+```text
+Checkout Code → Login to Docker → Build & Push Image → Security Scan → Publish Artifact
+```
+
+which is typically implemented using the following GitHub Actions:
 
 ```yaml
 - uses: actions/checkout@v7
@@ -348,11 +354,11 @@ organizations typically package the entire sequence into a single **Composite Ac
 
 * Every Composite Action is defined using an **`action.yml`** metadata file, which describes the Action's metadata, inputs, outputs, reusable execution steps, and other configuration required by GitHub. We will examine the structure of this file in detail during the hands-on demonstration.
 
-* Composite Actions can be stored **within the same repository** as the workflow (**Local Action**) or in a **dedicated repository** (**Remote Action**).
+* Composite Actions can be stored **within the same repository** as the workflow (**Local Action**) or in a **dedicated repository** (**Remote Action**). *(This storage model applies to all GitHub Custom Action types.)*
 
   * With **Local Actions**, both the **Action** and the **workflows** reside in the same repository, allowing multiple workflows within that repository to reuse the Action.
 
-  * With **Remote Actions**, the Action is maintained in a central repository, versioned independently, and consumed by workflows across multiple repositories.
+  * With **Remote Actions**, the Action is maintained in a dedicated repository, versioned independently, and can be consumed by workflows in **one or more repositories**.
 
 The following diagram illustrates the difference.
 
@@ -365,7 +371,7 @@ Repository A
 ├── .github/workflows/release.yml
 └── .github/workflows/deploy.yml
 
-Multiple Workflows
+Multiple Workflows (in Repository A)
         │
         ▼
 Reuse the Same Local Action
@@ -377,17 +383,23 @@ versus
 Remote Action
 
 Action Repository
-└── build-action
+└── my-org/build-action
 
 Repository A ─┐
 Repository B ─┼── uses: my-org/build-action@v1
 Repository C ─┘
 
-Multiple Repositories
-          │
-          ▼
-Reuse the Same Centralized Action
+One or More Repositories
+        │
+        ▼
+Reuse the Same Remote Action
 ```
+
+
+> **Note:** A **Remote Action** does **not** require a GitHub Organization. The Action can reside in a repository owned by an **individual GitHub user** or a **GitHub Organization**. The only requirement is that the workflow has permission to access the repository containing the Action.
+
+
+> **Note:** The concepts of **Local Actions** and **Remote Actions** are **not limited to Composite Actions**. They apply equally to **Composite Actions**, **JavaScript Actions**, and **Docker Actions**. The distinction is based on **where the Action is stored**, not **how it is implemented**.
 
 > **Key Takeaway:** Composite Actions are designed to **reuse existing automation**, not create entirely new execution environments or implement complex application logic. Whenever existing GitHub Actions, shell commands, or scripts can solve the problem, a Composite Action is usually the simplest, most maintainable, and most widely adopted solution.
 
