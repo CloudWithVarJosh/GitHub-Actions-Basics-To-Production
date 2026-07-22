@@ -647,11 +647,11 @@ We will configure this token as a **Repository Secret** in the next step.
 
 Before the workflow can authenticate with Docker Hub and publish Docker images, we need to configure the required **Repository Variables** and **Repository Secret**.
 
-| Name                 | Type                | Purpose                                      |
-| -------------------- | ------------------- | -------------------------------------------- |
-| `DOCKERHUB_USERNAME` | Repository Variable | Stores the Docker Hub username.              |
-| `DOCKER_IMAGE_NAME`  | Repository Variable | Stores the Docker image repository name.     |
-| `DOCKERHUB_TOKEN`    | Repository Secret   | Stores the Docker Hub Personal Access Token. |
+| Name | Type | Value to Configure |
+|------|------|--------------------|
+| `DOCKERHUB_USERNAME` | Repository Variable | Your Docker Hub username (e.g., `cloudwithvarjosh`). |
+| `DOCKER_IMAGE_NAME` | Repository Variable | The Docker image repository name in the format `<username>/<repository>` (e.g., `cloudwithvarjosh/python-demo`). |
+| `DOCKERHUB_TOKEN` | Repository Secret | Your Docker Hub Personal Access Token (PAT). |
 
 > **Note:** We covered **Repository Variables** and **Repository Secrets** in detail in the previous lectures. In this demo, we are simply reusing those concepts to configure our Composite Action.
 
@@ -733,7 +733,6 @@ Unlike workflow names, which identify an entire workflow execution, the **Action
 
 ```yaml
 inputs:
-
   dockerhub-username:
     description: Docker Hub Username
     required: true
@@ -752,9 +751,9 @@ inputs:
     default: latest
 ```
 
-Every **GitHub Custom Action** can expose configurable parameters through the **`inputs`** section.
+Every **GitHub Custom Action** exposes configurable parameters through the **`inputs`** section. These inputs define **what values the calling workflow can pass to the Action** using the **`with`** block.
 
-Rather than hardcoding usernames, credentials, image names, or other environment-specific values directly inside the Action, the Action accepts those values from the calling workflow.
+In the previous lectures, we used the **`with`** block to customize GitHub Actions. The values that can be specified in the **`with`** block are defined by the Action author in the **`inputs`** section of the **`action.yml`** file.
 
 Conceptually:
 
@@ -764,28 +763,29 @@ Workflow
     └── with
             │
             ▼
-       Composite Action
+     action.yml (inputs)
             │
-         inputs
+            ▼
+     Composite Action
 ```
 
 Each input consists of three important attributes.
 
-| Attribute       | Purpose                                                         |
-| --------------- | --------------------------------------------------------------- |
-| **description** | Documents the purpose of the input.                             |
-| **required**    | Specifies whether the workflow must provide a value.            |
-| **default**     | Provides a default value when the workflow does not supply one. |
+| Attribute | Purpose |
+|-----------|---------|
+| **description** | Documents the purpose of the input. |
+| **required** | Specifies whether the workflow must provide a value. |
+| **default** | Provides a default value when the workflow does not supply one. |
 
-Notice that three inputs are configured as:
+In this example, all four values are passed through the **`with`** block. However, only the first three inputs are marked as:
 
 ```yaml
 required: true
 ```
 
-This means the calling workflow **must** provide values for these inputs. If any required input is omitted, GitHub fails the workflow before the Action begins execution.
+This means the calling workflow **must** provide values for these inputs. If any required input is omitted, GitHub validates the Action configuration and fails the workflow before the Action begins execution.
 
-On the other hand:
+The **`image-tag`** input is configured as:
 
 ```yaml
 image-tag:
@@ -793,30 +793,19 @@ image-tag:
   default: latest
 ```
 
-defines an **optional input**.
-
-If the calling workflow supplies an image tag, GitHub uses that value.
-
-Otherwise, GitHub automatically uses:
+making it an **optional input**. If the workflow omits `image-tag` from the **`with`** block, GitHub automatically uses the default value:
 
 ```text
 latest
 ```
 
-as the default.
+In our demo, we explicitly provide **all four inputs**, so the default value is never used.
 
-In our workflow, we explicitly provide:
+> **Note:** In **Lecture 6**, we introduced the three types of **Inputs** supported by GitHub Actions: **Workflow Inputs**, **Reusable Workflow Inputs**, and **Action Inputs**. While discussing **Action Inputs**, we mentioned that we would revisit them once we started building our own GitHub Custom Actions. In this demo, we are implementing **Action Inputs**, where the **`inputs`** section of the **`action.yml`** file defines the parameters that the calling workflow can pass through the **`with`** block.
+>
+> Both **Action Inputs** and **Reusable Workflow Inputs** are conceptually similar, as they allow the calling workflow to pass values through the **`with`** block. The key difference lies in where those inputs are defined. **Reusable Workflow Inputs** are defined under **`on.workflow_call.inputs`** inside a reusable workflow, whereas **Action Inputs** are defined in the **`inputs`** section of the **`action.yml`** file for a GitHub Custom Action.
 
-```text
-Docker Hub Username
-Docker Hub Personal Access Token
-Docker Image Name
-Docker Image Tag
-```
-
-so the default value is never used.
-
-> **Production Insight:** Well-designed Custom Actions avoid hardcoding environment-specific values. Instead, they expose configurable values as **inputs**, allowing the same Action to be reused across multiple workflows, repositories, and deployment environments.
+> **Production Insight:** Well-designed Custom Actions avoid hardcoding environment-specific values. Instead, they expose configurable values as **inputs**, allowing the same Action to be customized through the **`with`** block and reused across multiple workflows, repositories, and deployment environments.
 
 ---
 
@@ -825,17 +814,17 @@ runs:
   using: composite
 ```
 
-This block defines **how GitHub should execute the Custom Action**.
+The **`runs`** section defines **how GitHub should execute the Custom Action**.
 
-The value:
+When GitHub encounters:
 
 ```yaml
 using: composite
 ```
 
-instructs GitHub to execute every step defined under the **`steps`** section.
+it recognizes the Action as a **Composite Action** and executes the sequence of GitHub Actions and Shell/Bash scripts defined under the **`steps`** section. GitHub simply runs each step one after another, similar to executing steps within a workflow.
 
-Earlier in this lecture, we learned that GitHub supports three different execution mechanisms.
+Earlier in this lecture, we learned that GitHub supports three execution mechanisms for GitHub Custom Actions.
 
 ```text
 Composite Action  → using: composite
@@ -843,58 +832,93 @@ JavaScript Action → using: node20
 Docker Action     → using: docker
 ```
 
-Although all three Action types are consumed using the **`uses`** keyword, they execute differently behind the scenes.
+The value specified in **`using`** tells GitHub **which execution engine to use**:
 
-Since this Action simply packages existing workflow steps, **`using: composite`** is the appropriate execution mechanism.
+- **`using: composite`** executes the steps defined under the **`steps`** section.
+- **`using: node20`** loads a Node.js runtime and executes the JavaScript entry point specified by the Action.
+- **`using: docker`** builds or pulls a Docker image and executes the Action inside a Docker container.
+
+Although all three Action types are invoked using the **`uses`** keyword, GitHub executes them differently based on the value of **`using`**.
+
+> **Note:** In this lecture, we are implementing a **Composite Action**, so GitHub executes the steps defined in the **`steps`** section. In the next lecture, we'll see how **JavaScript Actions** and **Docker Actions** use different execution mechanisms.
 
 ---
 
 ```yaml
-- name: Login to Docker Hub
-  uses: docker/login-action@v4
-  with:
-    username: ${{ inputs.dockerhub-username }}
-    password: ${{ inputs.dockerhub-token }}
+runs:
+  using: composite
+
+  steps:
+    - name: Login to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ inputs.dockerhub-username }}
+        password: ${{ inputs.dockerhub-token }}
 ```
 
-This step performs authentication with **Docker Hub** before the Docker image is built and pushed.
+> **Note:** One important difference you may have noticed is that the **`action.yml`** file does **not** contain a **`jobs`** section. Throughout this course, every workflow we've created followed the structure **`jobs → job(s) → steps`**. The **`jobs`** section defines one or more jobs (for example, **`build-job`**, **`test-job`**, or **`deploy-job`**), and each job contains its own sequence of **steps**.
+>
+> A **GitHub Custom Action**, however, is **not** a workflow and therefore does **not** define its own jobs. Instead, it is **invoked from a step within a job** defined by the calling workflow. Once invoked, the Custom Action executes the logic defined in its **`runs`** section, which may consist of **one or more steps**.
 
-Notice that we are **not implementing the authentication logic ourselves**.
+Conceptually:
 
-Instead, we are reusing the official:
+```text
+Calling Workflow
+──────────────────────────────────────────────
+jobs
+└── build-job
+    └── steps
+        └── Composite Action
+            └── runs
+                └── steps
+```
+
+* The **`steps`** section defines the sequence of operations performed by the Composite Action. Just like a workflow, each step can execute Shell/Bash commands using **`run`** or invoke another GitHub Action using the **`uses`** keyword.
+
+* In this example, the first step authenticates with **Docker Hub** before the Docker image is built and pushed. Notice that we are **not implementing the authentication logic ourselves**. Instead, we are simply reusing the official GitHub Action:
 
 ```yaml
 docker/login-action@v4
 ```
 
-that we have already used throughout this course.
+which we have already used throughout this course.
 
-The only difference is that the Action no longer retrieves values directly from **Variables** or **Secrets**.
-
-Instead, it receives them through:
+* More importantly, notice that the Composite Action does **not** directly reference the Repository Variable or Repository Secret:
 
 ```yaml
-inputs.dockerhub-username
-inputs.dockerhub-token
+${{ vars.DOCKERHUB_USERNAME }}
+${{ secrets.DOCKERHUB_TOKEN }}
 ```
 
-These values were supplied by the calling workflow through the **`with`** block.
+Instead, it consumes the following **Action Inputs**:
+
+```yaml
+${{ inputs.dockerhub-username }}
+${{ inputs.dockerhub-token }}
+```
+
+* These inputs are supplied by the calling workflow through the **`with`** block.
 
 Conceptually:
 
 ```text
-Workflow
-      │
-      └── with
-              │
-              ▼
-Composite Action Inputs
-              │
-              ▼
-docker/login-action
+Repository Variables / Secrets → Calling Workflow (with) → Composite Action (inputs) → docker/login-action
 ```
 
-This separation allows the Composite Action to remain completely reusable regardless of where the credentials originate.
+* This design keeps the Composite Action **independent of its execution environment**. The Action simply defines **what values it requires**, while the calling workflow decides **where those values come from**.
+
+* The calling workflow can provide these values from a variety of sources, including:
+  * **Repository Variables**
+  * **Repository Secrets**
+  * **Organization Variables**
+  * **Organization Secrets**
+  * **Environment Variables**
+  * **Environment Secrets**
+  * **GitHub Contexts**
+  * **Outputs** from previous jobs or steps
+  * **Hardcoded values** (generally not recommended)
+
+> **Production Insight:** A well-designed Composite Action should define **what values it requires**, not **where those values come from**. The calling workflow is responsible for obtaining the required values and passing them through the **`with`** block, while the Composite Action simply consumes those inputs and performs its reusable logic. This separation of **workflow orchestration** from **reusable execution logic** is one of the primary benefits of GitHub Custom Actions.
 
 ---
 
@@ -907,36 +931,36 @@ This separation allows the Composite Action to remain completely reusable regard
     tags: ${{ inputs.image-name }}:${{ inputs.image-tag }}
 ```
 
-Once authentication succeeds, the next step builds the Docker image and publishes it to Docker Hub.
-
-Again, notice that we are simply reusing another official Docker Action:
+* Once authentication succeeds, the next step builds the Docker image and publishes it to **Docker Hub**. Rather than implementing the build and push logic ourselves, we simply reuse the official GitHub Action:
 
 ```yaml
 docker/build-push-action@v7
 ```
 
-The image is tagged using the values supplied by the calling workflow.
+* Notice that only the **image name** and **image tag** are configurable through **Action Inputs**, allowing the calling workflow to determine which image should be built and how it should be tagged.
 
 ```text
-Image Name
-        +
-Image Tag
-```
-
-↓
-
-```text
-cloudwithvarjosh/python-demo:15
+Image Name + Image Tag → cloudwithvarjosh/python-demo:15
 ```
 
 where:
+  * **Image Name** is supplied by the calling workflow.
+  * **Image Tag** is also supplied by the calling workflow (in this demo, using **`${{ github.run_number }}`**).
 
-* **Image Name** comes from the workflow.
-* **Image Tag** is generated using **`${{ github.run_number }}`**.
+* In contrast, the remaining parameters are **hardcoded** within the Composite Action:
 
-The Composite Action itself does not know where these values originate. It simply consumes the inputs supplied by the workflow.
+```yaml
+context: .
+push: true
+```
 
-> **Key Observation:** Notice that we did **not** write any new automation logic while creating this Composite Action. Instead, we simply packaged two existing GitHub Actions into a reusable component. This is precisely what Composite Actions are designed for, **encapsulating existing workflow steps** so they can be reused across multiple workflows without duplication.
+Since these values are **not** exposed as **Action Inputs**, the calling workflow cannot modify them. Consequently, the Docker build context will always be the repository root (`.`), and the Docker image will always be pushed to the registry after it has been built.
+
+* If we wanted the calling workflow to control either of these behaviors, we would expose additional **Action Inputs** (for example, **`build-context`** or **`push-image`**) and pass those values to **`docker/build-push-action`** instead of hardcoding them.
+
+* This demonstrates an important design principle of Composite Actions. The Action author decides **which parameters should remain configurable** and **which should remain fixed**. The calling workflow can customize only those values that have been intentionally exposed as **Action Inputs**, while the remaining implementation details stay encapsulated within the Action.
+
+> **Key Observation:** Notice that we did **not** write any new automation logic while creating this Composite Action. Instead, we simply packaged two existing GitHub Actions, **`docker/login-action`** and **`docker/build-push-action`**, into a reusable component. This is precisely what Composite Actions are designed for, **encapsulating existing workflow steps while exposing only the configuration that consumers need**.
 
 ---
 
@@ -1066,11 +1090,11 @@ Later, these values are passed to the Composite Action using the **`with`** bloc
   uses: ./.github/actions/docker-build-push
 ```
 
-This is the **most important configuration** in this workflow.
+* This is the **most important configuration** in the calling workflow, as it instructs GitHub which **GitHub Custom Action** should be executed.
 
-Unlike the GitHub and Docker Actions we have been consuming throughout this course, this Action resides **within the same repository** as the workflow.
+* Unlike the GitHub and Docker Actions we have been consuming throughout this course, this Composite Action resides **within the same repository** as the calling workflow.
 
-The path:
+* The path:
 
 ```yaml
 ./.github/actions/docker-build-push
@@ -1082,7 +1106,7 @@ begins with:
 ./
 ```
 
-which instructs GitHub to locate the Action **relative to the repository root** rather than downloading it from another repository.
+which instructs GitHub to locate the Action **relative to the repository root**, rather than downloading it from another repository.
 
 Conceptually:
 
@@ -1096,13 +1120,69 @@ Repository
 │       └── refactored-workflow.yaml
 ```
 
-GitHub automatically locates the **`action.yml`** file within the specified directory and executes the Composite Action.
+* GitHub automatically locates the **`action.yml`** file within the specified directory and executes the Composite Action.
 
-Actions referenced in this manner are known as **Local Actions**.
+* Actions referenced using a relative path are known as **Local Actions**, because both the workflow and the Action reside in the same repository.
 
-Unlike **Remote Actions**, which are maintained in dedicated repositories and shared across multiple repositories, Local Actions are stored alongside the workflows that consume them.
+* Earlier, we learned that **Remote Actions** are maintained in dedicated repositories and consumed by one or more repositories.
 
-> **Production Insight:** Local Actions are commonly used when reusable automation is required within a single repository. When the same Action needs to be shared across multiple repositories, organizations typically move it into a dedicated repository and consume it as a **Remote Action**, which we will explore later in this lecture.
+* For example, if the Action were hosted in a repository named **`remote-action-repo`** owned by the GitHub user **`cloudwithvarjosh`**, the calling workflow would reference it as:
+
+```yaml
+- name: Build & Push Docker Image
+  uses: cloudwithvarjosh/remote-action-repo@v1
+```
+
+* Similarly, if the Action were maintained in a repository owned by a GitHub Organization named **`cwvj-org`**, the reference would become:
+
+```yaml
+- name: Build & Push Docker Image
+  uses: cwvj-org/remote-action-repo@v1
+```
+
+* Unlike a **Local Action**, where we provide a **relative directory path**, a **Remote Action** is referenced using the format:
+
+```text
+OWNER/REPOSITORY@VERSION
+```
+
+where:
+
+* **OWNER** is the GitHub user or GitHub Organization.
+* **REPOSITORY** is the repository containing the Custom Action.
+* **VERSION** is the Git tag, branch, or commit SHA to consume.
+
+* GitHub downloads the specified repository at the requested version, automatically locates the **`action.yml`** file in the repository's root directory, and executes the Action defined within it.
+
+Conceptually:
+
+```text
+Local Action
+Workflow Repository
+        │
+        ▼
+Relative Path
+(./.github/actions/docker-build-push)
+        │
+        ▼
+Locate action.yml
+
+---
+
+Remote Action
+Workflow Repository
+        │
+        ▼
+OWNER/REPOSITORY@VERSION
+        │
+        ▼
+Download Repository
+        │
+        ▼
+Locate action.yml
+```
+
+> **Production Insight:** Local Actions are ideal when reusable automation is required only within a single repository. When the same Action needs to be shared across multiple repositories, teams typically move it into a dedicated repository and consume it as a **Remote Action**. Hosting the Action under a **GitHub Organization** is a common enterprise practice, as it enables centralized versioning, governance, and reuse across multiple repositories.
 
 ---
 
@@ -1114,22 +1194,23 @@ with:
   image-tag: ${{ env.IMAGE_TAG }}
 ```
 
-Earlier, we defined four **inputs** inside the Composite Action.
+Earlier in this course, while working with **Reusable Workflows**, we learned that the calling workflow passes values to the reusable workflow through the **`with`** block.
 
-The **`with`** block supplies values for those inputs.
+The same concept applies to **GitHub Custom Actions**. The calling workflow supplies values through the **`with`** block, and the Composite Action receives those values as **Action Inputs**.
 
 Conceptually:
 
 ```text
-Workflow (with) → Composite Action (inputs)
+Calling Workflow (with) → Composite Action (inputs)
 ```
 
-GitHub automatically maps each value supplied under **`with`** to the corresponding input defined in **`action.yml`**.
+GitHub automatically maps each value supplied under the **`with`** block to the **Action Input with the same name** defined in the **`action.yml`** file.
 
 For example:
 
 ```yaml
-image-name: ${{ env.IMAGE_NAME }}
+with:
+  image-name: ${{ env.IMAGE_NAME }}
 ```
 
 is automatically mapped to:
@@ -1139,38 +1220,40 @@ inputs:
   image-name:
 ```
 
-inside the Composite Action.
-
 Similarly:
 
-```yaml
-dockerhub-username
+```text
+Workflow (with)                     Composite Action (inputs)
+────────────────────────────────────────────────────────────────
+dockerhub-username   ───────────►   inputs.dockerhub-username
+dockerhub-token      ───────────►   inputs.dockerhub-token
+image-name           ───────────►   inputs.image-name
+image-tag            ───────────►   inputs.image-tag
 ```
 
-is mapped to:
+Notice that the names under the **`with`** block must exactly match the corresponding input names defined in the **`action.yml`** file. GitHub uses these names to automatically map each supplied value to the appropriate Action Input.
 
-```yaml
-inputs:
-  dockerhub-username
-```
-
-and the same process applies to the remaining inputs.
-
-Notice that the values originate from multiple sources:
+Although all four values are passed through the **`with`** block, they originate from different sources:
 
 * **Repository Variables**
 * **Repository Secrets**
 * **Job-level Environment Variables**
 
-However, the Composite Action has **no knowledge** of where those values came from. It simply receives the inputs supplied by the calling workflow and performs its reusable logic.
+The Composite Action has **no knowledge** of where these values originated. It simply receives the values through its inputs and performs its reusable logic.
 
 Conceptually:
 
 ```text
-Repository Variables + Repository Secrets + GitHub Context + Job Environment Variables → Workflow (with) → Composite Action (inputs)
+Repository Variables / Secrets / Environment Variables
+                           │
+                           ▼
+                Calling Workflow (with)
+                           │
+                           ▼
+              Composite Action (inputs)
 ```
 
-> **Key Observation:** A well-designed Composite Action should remain independent of its execution environment. It should not assume whether its inputs originate from **Repository Variables**, **Environment Variables**, **Secrets**, **GitHub Contexts**, or hardcoded values. Instead, the workflow is responsible for supplying those values, while the Composite Action simply consumes them. This separation of **workflow orchestration** from **reusable execution logic** is one of the primary benefits of GitHub Custom Actions.
+> **Key Observation:** A well-designed Composite Action should define **what values it requires**, not **where those values come from**. The calling workflow is responsible for obtaining values from **Repository Variables**, **Repository Secrets**, **Environment Variables**, **GitHub Contexts**, workflow outputs, or any other source, and passing them through the **`with`** block. The Composite Action simply consumes those inputs and performs its reusable logic. This separation of **workflow orchestration** from **reusable execution logic** is one of the primary benefits of GitHub Custom Actions.
 
 ---
 
@@ -1432,7 +1515,6 @@ inputs:
 * These values are passed by the calling workflow using the **with** keyword, which we will see shortly.
 
 ---
-
 ```yaml
 outputs:
   build-info-path:
@@ -1440,19 +1522,48 @@ outputs:
     value: output/build-info.txt
 ```
 
-* This block exposes an **output** from the Composite Action.
+* Recall that in **Lecture 7**, we introduced the three types of **Outputs** supported by GitHub Actions:
+  * **Step Outputs**, used to pass values between steps within the same job.
+  * **Job Outputs**, used to pass values from one job to another within the same workflow.
+  * **Reusable Workflow Outputs**, used to return values from a reusable workflow back to the calling workflow.
 
-* After generating the build metadata file, the Composite Action returns the file path as an output named **build-info-path**.
+* In this demo, we are introducing the fourth concept, **Action Outputs**, which allow a **GitHub Custom Action** to return values back to the calling workflow, similar to how a reusable workflow exposes outputs.
 
-* Instead of requiring the workflow to know where the file was created, the Composite Action simply exposes that information through an output variable.
+* During execution, this Composite Action generates a build metadata file named **`build-info.txt`** containing information such as the application name, environment, repository, branch, commit SHA, workflow name, actor, build time, and run number.
 
-* The calling workflow can later access this value using:
+```text
+GitHub Workspace
+└── output/
+    └── build-info.txt
+```
+
+* The **GitHub Workspace** is a directory created on the **GitHub Actions runner** for every job. After the repository is checked out, all workflow steps and Composite Actions execute from this workspace and share the same filesystem. Any files created by the Composite Action are therefore immediately accessible to subsequent steps in the calling workflow.
+
+* Rather than returning the file itself, the Composite Action returns the **relative path** to the generated file as an output.
+
+```text
+build-info-path → output/build-info.txt
+```
+
+* The calling workflow can retrieve this output using:
 
 ```yaml
 ${{ steps.build-info.outputs.build-info-path }}
 ```
 
-* This approach improves **reusability** because the internal implementation of the Composite Action remains hidden from the workflow consuming it.
+* Since both the calling workflow and the Composite Action execute within the **same job** on the **same GitHub Actions runner**, they share the same **GitHub Workspace**. As a result, the output **`build-info-path`** points to a file that already exists in the shared workspace, allowing subsequent steps in the calling workflow to access it directly.
+
+For example:
+
+```bash
+cat ${{ steps.build-info.outputs.build-info-path }}
+```
+
+* In our demo, rather than simply reading the file, we will use this output in a later step of the calling workflow to upload **`build-info.txt`** as a **GitHub Actions Artifact** using **`actions/upload-artifact`**. This preserves the file beyond the workflow execution and makes it available for download from the **Artifacts** section of the workflow run.
+
+> **Important:** The GitHub Workspace exists only for the lifetime of the current job. Once the job completes, the GitHub-hosted runner is terminated and its workspace is deleted. Consequently, any files created by the Composite Action are also removed unless they are explicitly persisted, for example, by uploading them as a workflow artifact or copying them to external storage.
+
+* This approach improves **reusability** because the calling workflow does not need to know where or how the Composite Action generates its files. The Action simply exposes the required information through an **Action Output**, while keeping its internal implementation hidden. If the internal directory structure changes in the future, only the Composite Action needs to be updated, leaving the calling workflows unchanged.
 
 ---
 
@@ -1522,11 +1633,13 @@ mkdir -p output
 BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 ```
 
-* This command generates the current timestamp in **UTC** and stores it in the **BUILD_TIME** variable.
+* This command executes the **`date`** command using **command substitution** (`$(...)`) and stores the resulting timestamp in a **shell variable** named **`BUILD_TIME`**.
 
-* The **-u** option instructs the **date** command to use **Coordinated Universal Time (UTC)** instead of the runner's local timezone.
+* Since **`BUILD_TIME`** is a **shell variable**, it is available only within the current shell script. It is **not** a GitHub Actions Environment Variable and is **not** accessible from subsequent workflow steps.
 
-* The timestamp follows the **ISO 8601** format, which is the industry standard used across cloud platforms, APIs, logging systems, and CI/CD pipelines.
+* The **`-u`** option instructs the **`date`** command to use **Coordinated Universal Time (UTC)** instead of the runner's local timezone.
+
+* The generated timestamp follows the **ISO 8601** format, the industry standard used across cloud platforms, APIs, logging systems, and CI/CD pipelines.
 
 * Using **UTC** ensures that timestamps remain consistent regardless of where the workflow executes.
 
@@ -1619,11 +1732,6 @@ jobs:
         with:
           application-name: Cloud With VarJosh
           environment: Development
-
-      - name: Display Output Variable
-        run: |
-          echo "Build information generated at:"
-          echo "${{ steps.build-info.outputs.build-info-path }}"
 
       - name: Upload Build Information
         uses: actions/upload-artifact@v4
@@ -1766,50 +1874,6 @@ ${{ inputs.environment }}
 ```
 
 inside the Composite Action.
-
----
-
-```yaml
-- name: Display Output Variable
-  run: |
-    echo "Build information generated at:"
-    echo "${{ steps.build-info.outputs.build-info-path }}"
-```
-
-* This step demonstrates how a workflow can consume an **output** exposed by a Composite Action.
-
-* Earlier, we defined the following output inside **action.yml**.
-
-```yaml
-outputs:
-  build-info-path:
-```
-
-* Since the Composite Action exposes this output, the workflow can access it using:
-
-```yaml
-${{ steps.build-info.outputs.build-info-path }}
-```
-
-Let's understand this expression from left to right.
-
-* **steps** refers to all previously executed workflow steps.
-
-* **build-info** is the **step ID** assigned while invoking the Composite Action.
-
-* **outputs** contains every output exposed by that step.
-
-* **build-info-path** is the specific output we defined inside the Composite Action.
-
-As a result, the workflow prints the following value:
-
-```text
-output/build-info.txt
-```
-
-Notice that the workflow does **not** need to know how the file was created or where it was generated internally.
-
-It simply consumes the output exposed by the Composite Action, making the Action easier to reuse across multiple workflows.
 
 ---
 
