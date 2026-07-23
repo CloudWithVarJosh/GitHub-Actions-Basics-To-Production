@@ -186,7 +186,7 @@ which is typically implemented using the following GitHub Actions:
 - uses: docker/login-action@v4
 - uses: docker/build-push-action@v7
 - uses: aquasecurity/trivy-action@v0
-- uses: actions/upload-artifact@v4
+- uses: actions/upload-artifact@v7
 ```
 
 Similarly, they may repeatedly execute the same set of shell commands:
@@ -663,7 +663,27 @@ Before the workflow can authenticate with Docker Hub and publish Docker images, 
 
 As we learned in the theory section, a **Composite Action** packages one or more reusable execution steps into a single reusable component. In this step, we will create our first **Local Composite Action** by moving the Docker authentication and image publishing steps out of the workflow and into an **`action.yml`** file.
 
-Create the following file.
+By convention, Local Actions are stored under the **`.github/actions`** directory. Each subdirectory represents an individual GitHub Custom Action and contains its own **`action.yml`** file, which serves as the **entry point** for that Action. As your project grows, you can create multiple Action directories, each encapsulating a different piece of reusable automation.
+
+Conceptually, your repository may look like this:
+
+```text
+Repository
+├── .github
+│   ├── actions
+│   │   ├── docker-build-push
+│   │   │   └── action.yml
+│   │   ├── generate-build-info
+│   │   │   └── action.yml
+│   │   └── deploy-to-eks
+│   │       └── action.yml
+│   └── workflows
+│       └── refactored-workflow.yaml
+```
+
+Each directory under **`.github/actions`** represents a separate GitHub Custom Action. When a workflow references one of these directories using the **`uses`** keyword, GitHub automatically locates the corresponding **`action.yml`** file and executes the Action defined within it.
+
+For this demo, create the following file:
 
 **`.github/actions/docker-build-push/action.yml`**
 
@@ -986,7 +1006,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Build & Push Docker Image
         uses: ./.github/actions/docker-build-push
@@ -1076,7 +1096,7 @@ Later, these values are passed to the Composite Action using the **`with`** bloc
 
 ```yaml
 - name: Checkout Repository
-  uses: actions/checkout@v4
+  uses: actions/checkout@v7
 ```
 
 * Before the Composite Action can build the Docker image, the workflow must first download the repository contents onto the runner.
@@ -1734,7 +1754,7 @@ jobs:
           environment: Development
 
       - name: Upload Build Information
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
 
         with:
           name: build-information
@@ -1879,7 +1899,7 @@ inside the Composite Action.
 
 ```yaml
 - name: Upload Build Information
-  uses: actions/upload-artifact@v4
+  uses: actions/upload-artifact@v7
 
   with:
     name: build-information
