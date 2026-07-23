@@ -1,0 +1,29 @@
+name: Build Information Demo
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-information-job:
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Generate Build Information
+        id: build-info
+
+        uses: ./.github/actions/generate-build-info
+
+        with:
+          application-name: Cloud With VarJosh
+          environment: Development
+
+      - name: Upload Build Information
+        uses: actions/upload-artifact@v7
+
+        with:
+          name: build-information
+          path: ${{ steps.build-info.outputs.build-info-path }}

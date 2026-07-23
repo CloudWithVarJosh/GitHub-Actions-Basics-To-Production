@@ -1,0 +1,46 @@
+name: Generate Build Information
+description: Generates build metadata using GitHub Context.
+
+inputs:
+  application-name:
+    description: Name of the application.
+    required: true
+
+  environment:
+    description: Deployment environment.
+    required: true
+
+outputs:
+  build-info-path:
+    description: Path to the generated build information file.
+    value: output/build-info.txt
+
+runs:
+  using: composite
+
+  steps:
+    - name: Generate Build Information
+      shell: bash
+      run: |
+        set -e
+
+        mkdir -p output
+
+        BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+        cat <<EOF > output/build-info.txt
+        Application : ${{ inputs.application-name }}
+        Environment : ${{ inputs.environment }}
+        Repository  : ${{ github.repository }}
+        Branch      : ${{ github.ref_name }}
+        Commit SHA  : ${{ github.sha }}
+        Run Number  : ${{ github.run_number }}
+        Workflow    : ${{ github.workflow }}
+        Triggered By: ${{ github.actor }}
+        Build Time  : ${BUILD_TIME}
+        EOF
+
+        echo "======================================"
+        echo "Build Information"
+        echo "======================================"
+        cat output/build-info.txt
