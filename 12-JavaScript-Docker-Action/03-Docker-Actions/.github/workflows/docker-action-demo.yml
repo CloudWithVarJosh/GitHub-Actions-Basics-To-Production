@@ -1,0 +1,20 @@
+name: Docker Action Demo
+
+on:
+  workflow_dispatch:
+
+jobs:
+  demo-job:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Execute Docker Action
+        uses: ./.github/actions/docker-system-info
+
+        with:
+          name: Cloud With VarJosh
