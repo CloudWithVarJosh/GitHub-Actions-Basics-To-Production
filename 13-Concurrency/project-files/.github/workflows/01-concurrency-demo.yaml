@@ -1,0 +1,29 @@
+name: GitHub Actions Concurrency Demo
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+jobs:
+  concurrency-demo-job:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Start Workflow
+        run: |
+          echo "Workflow started"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "Commit SHA: ${{ github.sha }}"
+
+      - name: Simulate a Long-Running Task
+        run: |
+          echo "Long-running task started"
+          sleep 120
+          echo "Long-running task completed"
+
+      - name: Complete Workflow
+        run: |
+          echo "Workflow completed successfully"
