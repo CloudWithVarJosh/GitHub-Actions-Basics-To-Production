@@ -1,0 +1,22 @@
+name: JavaScript Action Demo
+
+on:
+  workflow_dispatch:
+
+jobs:
+  demo-job:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+
+      - name: Install Action Dependencies
+        working-directory: ./.github/actions/workflow-summary
+        run: npm install
+
+      - name: Execute JavaScript Action
+        uses: ./.github/actions/workflow-summary
+        with:
+          name: Cloud With VarJosh
