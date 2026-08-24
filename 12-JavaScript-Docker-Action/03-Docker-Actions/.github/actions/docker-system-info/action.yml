@@ -1,0 +1,14 @@
+name: Docker System Info
+description: Demonstrates a simple Docker Action
+
+inputs:
+  name:
+    description: Name to display
+    required: true
+
+runs:
+  using: docker
+  image: Dockerfile
+
+  args:
+    - ${{ inputs.name }}
