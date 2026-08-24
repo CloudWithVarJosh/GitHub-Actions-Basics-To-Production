@@ -2,6 +2,8 @@
 
 ## Video reference for this lecture is the following:
 
+[![Watch the video](https://img.youtube.com/vi/0wXdpfNSWuI/maxresdefault.jpg)](https://www.youtube.com/watch?v=0wXdpfNSWuI&ab_channel=CloudWithVarJosh)
+
 ---
 
 ## ⭐ Support the Project  
@@ -21,11 +23,11 @@ Whether you're starting your Cloud & DevOps journey, preparing for interviews, p
 ## Table of Contents
 
 - [Introduction](#introduction)  
-- [Why Concurrency?](#why-concurrency)  
+- [Why GitHub Actions Concurrency?](#why-github-actions-concurrency)  
   - [When Can Multiple Workflow Runs Occur?](#when-can-multiple-workflow-runs-occur)  
   - [Are Concurrent Workflow Runs Always a Problem?](#are-concurrent-workflow-runs-always-a-problem)  
-  - [When Concurrent Execution Is Beneficial](#when-concurrent-execution-is-beneficial)  
-  - [When Concurrent Execution Can Become a Problem](#when-concurrent-execution-can-become-a-problem)  
+  - [When Concurrent Execution Is Beneficial](#category-1-when-concurrent-execution-is-beneficial)  
+  - [When Concurrent Execution Can Become a Problem](#category-2-when-concurrent-execution-can-become-a-problem)  
 - [What is GitHub Actions Concurrency?](#what-is-github-actions-concurrency)  
 - [**Demo:** Understanding GitHub Actions Concurrency](#demo-understanding-github-actions-concurrency)  
   - [Step 1: Repository Setup and Authentication](#step-1-repository-setup-and-authentication)  
@@ -37,8 +39,7 @@ Whether you're starting your Cloud & DevOps journey, preparing for interviews, p
     - [Where Can We Define Concurrency?](#where-can-we-define-concurrency)  
       - [Workflow-Level Concurrency](#1-workflow-level-concurrency)  
       - [Job-Level Concurrency](#2-job-level-concurrency)  
-      - [Shared Concurrency Across Multiple Workflows](#3-shared-concurrency-across-multiple-workflows)  
-    - [Understanding Dynamic Concurrency Groups](#understanding-dynamic-concurrency-groups)  
+    - [Using Dynamic Concurrency Groups](#using-dynamic-concurrency-groups)  
       - [Understanding the Dynamic Group](#understanding-the-dynamic-group)  
   - [Step 5: Re-trigger the Workflow After Adding the Concurrency Block](#step-5-re-trigger-the-workflow-after-adding-the-concurrency-block)  
     - [1. Push the Updated Workflow](#1-push-the-updated-workflow)  
@@ -67,6 +68,8 @@ Finally, through a hands-on demo, we will observe the default behavior of overla
 ---
 
 ### Why GitHub Actions Concurrency?
+
+![Alt text](/images/13a.png)
 
 A workflow does not necessarily run only once at a time. Depending on how we configure its triggers, **a new workflow run can be triggered while an earlier run is still executing**. Multiple workflow runs are normal and, in many cases, allowing them to execute concurrently is exactly what we want.
 
@@ -116,6 +119,8 @@ The important point is that **a new event can result in a new workflow run even 
 ---
 
 ### Are Concurrent Workflow Runs Always a Problem?
+
+![Alt text](/images/13b.png)
 
 The answer is **no**. Concurrent execution is not inherently a problem. Whether multiple executions should run concurrently depends entirely on **what they are doing** and whether they are independent or interact with the same resources.
 
@@ -168,6 +173,8 @@ Although the examples above focus on **multiple runs of the same workflow**, the
 
 #### **Category 2: When Concurrent Execution Can Become a Problem**
 
+![Alt text](/images/13b.png)
+
 Concurrent execution can become problematic when multiple executions are **not truly independent**. This can happen when newer executions make older ones unnecessary, multiple executions modify the same resource, or the order in which they complete affects the final result.
 
 Although the examples below focus primarily on **multiple runs of the same workflow**, the same challenges can also occur when executions from **different workflows** interact with the same resources or environments.
@@ -209,6 +216,34 @@ Commit B → Workflow Run B → Deploy Version 2 → Started Later → Completes
 
 If the newer version is deployed first but the older execution finishes afterward, **Version 1 could overwrite Version 2**, leaving the environment in an unexpected state.
 
+> **A race condition can be particularly problematic when multiple workflow runs are processing different commits at the same time.**
+>
+> For example, assume Commit A triggers a workflow that performs several code or infrastructure changes and therefore takes longer to complete. Before it finishes, Commit B is pushed with the newer and desired state, but its workflow has less work to perform and completes first.
+>
+> ```text
+> Commit A → Workflow Run A → Starts
+>                         ↓
+>                    Takes Longer
+>
+> Commit B → Workflow Run B → Starts Later
+>                         ↓
+>                    Completes First
+>
+> Workflow Run A → Completes Later
+> ```
+>
+> The problem is that **Run A was working on an older state**, but because it finishes after Run B, it may apply changes after the newer workflow has already completed. As a result, **the final code, infrastructure, or environment state may no longer reflect the latest commit**.
+>
+> ```text
+> Commit A → Older State → Run A → Completes Last
+>
+> Commit B → Latest State → Run B → Completes First
+>
+> Final State → May Reflect Commit A Instead of Commit B
+> ```
+>
+> This is one of the situations where cancelling older runs using `cancel-in-progress: true` can be useful. If **only the latest commit matters**, a newer run can supersede an older run that is still executing.
+
 **4. Processing outdated changes**: A workflow run triggered by an older commit may continue executing even after a newer commit triggers another run.
 
 ```text
@@ -218,19 +253,14 @@ Commit B → Workflow Run B → Triggered
 
 Depending on the use case, we may no longer want to continue spending resources processing **Commit A**, because **Commit B represents a newer version of the code** and may have effectively superseded the earlier run.
 
+
 > **Key Idea:** The goal is **not to prevent concurrent execution**. When executions are independent, concurrent execution can provide faster feedback and improve efficiency. However, when newer executions make older ones unnecessary, multiple executions modify shared resources, or the completion order can affect the final outcome, we may need to control how those executions overlap. This can apply to **multiple runs of the same workflow or related executions from different workflows**. **GitHub Actions Concurrency** provides a mechanism to handle these situations.
 
 ---
 
-Absolutely. Since **"Where Can We Define Concurrency?"** is already covered later, we should keep this section focused only on answering:
-
-**What is concurrency, why is it needed, what is a concurrency group, and how does GitHub handle overlapping executions?**
-
-Here is the revised version:
-
----
-
 ### What is GitHub Actions Concurrency?
+
+![Alt text](/images/13c.png)
 
 **GitHub Actions Concurrency ensures that executions belonging to the same concurrency group are not allowed to run concurrently.**
 
