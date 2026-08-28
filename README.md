@@ -18,7 +18,7 @@ This course focuses on building **strong conceptual understanding first**, and t
 
 ### Course Introduction:
 
-TBD
+[![Watch the Course Introduction](https://img.youtube.com/vi/xRqFDrSmLSM/maxresdefault.jpg)](https://www.youtube.com/watch?v=xRqFDrSmLSM&ab_channel=CloudWithVarJosh)
 
 ## YouTube Playlist for This Course
 
