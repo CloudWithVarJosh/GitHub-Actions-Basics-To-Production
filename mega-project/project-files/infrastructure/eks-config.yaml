@@ -1,0 +1,47 @@
+apiVersion: eksctl.io/v1alpha5
+kind: ClusterConfig
+
+metadata:
+  name: cwvj-mega-demo-eks
+  region: ap-south-1
+  version: "1.36"
+  tags:
+    owner: cloudwithvarjosh
+    project: cwvj-mega-demo
+    purpose: github-actions-mega-project
+    managed-by: eksctl
+
+availabilityZones:
+  - ap-south-1a
+  - ap-south-1b
+
+iam:
+  withOIDC: true
+
+managedNodeGroups:
+  - name: cwvj-mega-demo-ng
+    instanceType: c7i-flex.large
+    minSize: 2
+    maxSize: 2
+    desiredCapacity: 2
+
+    volumeSize: 20
+    volumeType: gp3
+    volumeEncrypted: true
+
+    # Workers use public subnets created by eksctl.
+    privateNetworking: false
+
+    # SSH intentionally disabled.
+    # Add only workload-specific IAM permissions when required.
+
+    labels:
+      project: cwvj-mega-demo
+      workload: general
+
+    tags:
+      owner: cloudwithvarjosh
+      project: cwvj-mega-demo
+      purpose: github-actions-mega-project
+      managed-by: eksctl
+      node-type: public-worker

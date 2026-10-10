@@ -1,0 +1,24 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::497613475050:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": [
+            "repo:CloudWithVarJosh@146525273/mega-project-demo@1386577280:ref:refs/heads/feature/*",
+            "repo:CloudWithVarJosh@146525273/mega-project-demo@1386577280:ref:refs/heads/bugfix/*",
+            "repo:CloudWithVarJosh@146525273/mega-project-demo@1386577280:ref:refs/heads/hotfix/*"
+          ]
+        }
+      }
+    }
+  ]
+}
