@@ -1,0 +1,458 @@
+name: CWVJ CI | Build, Scan and Publish
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+      - 'bugfix/**'
+      - 'hotfix/**'
+    paths:
+      - 'cwvj-3tier-mega-project/frontend/**'
+      - 'cwvj-3tier-mega-project/backend/**'
+      - '.github/workflows/**'
+      - 'kubernetes/**'
+
+  workflow_dispatch:
+
+concurrency:
+  group: cwvj-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  trivy-scan-job:
+    name: Repository Filesystem Security Scan
+    runs-on: ubuntu-26.04
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+
+      - name: Run Trivy repository filesystem scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ github.workspace }}
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+  backend-job:
+    name: Backend Build, Test and Quality Analysis
+    runs-on: ubuntu-26.04
+    needs: trivy-scan-job
+
+    defaults:
+      run:
+        working-directory: cwvj-3tier-mega-project/backend
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: cwvj-3tier-mega-project/backend/pom.xml
+
+      - name: Verify Java version
+        run: java --version
+
+      - name: Build, test, and package backend
+        run: mvn --batch-mode clean verify
+
+      - name: Inspect backend build outputs
+        run: |
+          echo "=== Maven Build Outputs ==="
+          ls -lah target/
+
+          echo "=== Unit Test Reports ==="
+          ls -lah target/surefire-reports/
+
+          echo "=== JaCoCo Coverage Reports ==="
+          ls -lah target/site/jacoco/
+
+      - name: Analyze backend code with SonarQube
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        run: |
+          mvn --batch-mode org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
+            -Dsonar.projectKey=cwvj-mega-backend \
+            -Dsonar.qualitygate.wait=true
+
+      - name: Upload backend JAR
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-jar
+          path: cwvj-3tier-mega-project/backend/target/user-management-api.jar
+          if-no-files-found: error
+
+  backend-image-build-scan-job:
+    name: Build and Scan Backend Container Image
+    runs-on: ubuntu-26.04
+    needs: backend-job
+
+    outputs:
+      image-tag: ${{ steps.image-tag.outputs.image_tag }}
+
+    steps:
+      # Checkout the repository so the Dockerfile and pom.xml are available.
+      - name: Checkout source code
+        uses: actions/checkout@v7
+
+      # Download the exact JAR produced and validated by the backend job.
+      - name: Download backend JAR
+        uses: actions/download-artifact@v8
+        with:
+          name: backend-jar
+          path: cwvj-3tier-mega-project/backend
+
+      # Verify that the downloaded JAR is available.
+      - name: Verify backend JAR
+        working-directory: cwvj-3tier-mega-project/backend
+        run: ls -lh user-management-api.jar
+
+      # Set up Java to run the Maven Help Plugin.
+      - name: Set up Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # Read the application version from pom.xml.
+      - name: Read application version
+        id: app-version
+        working-directory: cwvj-3tier-mega-project/backend
+        run: |
+          VERSION=$(mvn --batch-mode help:evaluate \
+            -Dexpression=project.version \
+            -q \
+            -DforceStdout)
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Generate an image tag using the application version and short commit SHA.
+      - name: Generate image tag
+        id: image-tag
+        env:
+          APP_VERSION: ${{ steps.app-version.outputs.version }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE_TAG="${APP_VERSION}-${SHORT_SHA}"
+
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      # Build the image using the exact JAR validated by the backend job.
+      - name: Build backend container image
+        uses: docker/build-push-action@v7
+        with:
+          context: cwvj-3tier-mega-project/backend
+          file: cwvj-3tier-mega-project/backend/Dockerfile
+          tags: cwvj-mega-backend:${{ steps.image-tag.outputs.image_tag }}
+          load: true
+
+      # Display the locally built image for verification.
+      - name: Verify backend container image
+        run: docker images cwvj-mega-backend
+
+      # Scan the container image for HIGH and CRITICAL vulnerabilities.
+      - name: Scan backend container image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: cwvj-mega-backend:${{ steps.image-tag.outputs.image_tag }}
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      # Save the exact image that passed the security scan as a Docker archive.
+      - name: Save backend container image
+        run: |
+          docker save \
+            -o cwvj-mega-backend.tar \
+            cwvj-mega-backend:${{ steps.image-tag.outputs.image_tag }}
+
+      # Upload the exact scanned image so a later job can use the same image.
+      - name: Upload backend container image
+        uses: actions/upload-artifact@v7
+        with:
+          name: backend-container-image
+          path: cwvj-mega-backend.tar
+          if-no-files-found: error
+
+  backend-ecr-push-job:
+    name: Push Backend Image to Amazon ECR
+    runs-on: ubuntu-26.04
+    needs: backend-image-build-scan-job
+
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download backend container image
+        uses: actions/download-artifact@v8
+        with:
+          name: backend-container-image
+          path: .
+
+      # Load the exact Docker image produced and scanned by the previous job.
+      - name: Load backend container image
+        run: docker load -i cwvj-mega-backend.tar
+
+      # Verify that the expected image and tag are available.
+      - name: Verify backend container image
+        env:
+          IMAGE_TAG: ${{ needs.backend-image-build-scan-job.outputs.image-tag }}
+        run: docker images cwvj-mega-backend:${IMAGE_TAG}
+
+      # Authenticate to AWS using GitHub OIDC and the IAM role created earlier.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Authenticate Docker with the Amazon ECR registry.
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password \
+            --region "${{ vars.AWS_REGION }}" \
+            | docker login \
+                --username AWS \
+                --password-stdin \
+                "${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com"
+
+      # Tag the local image with its ECR repository name while preserving the existing image tag.
+      - name: Tag backend image for Amazon ECR
+        env:
+          IMAGE_TAG: ${{ needs.backend-image-build-scan-job.outputs.image-tag }}
+        run: |
+          ECR_REGISTRY="${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com"
+
+          docker tag \
+            "cwvj-mega-backend:${IMAGE_TAG}" \
+            "${ECR_REGISTRY}/cwvj-mega-backend:${IMAGE_TAG}"
+
+      # Push the exact image that was built and scanned earlier.
+      - name: Push backend image to Amazon ECR
+        env:
+          IMAGE_TAG: ${{ needs.backend-image-build-scan-job.outputs.image-tag }}
+        run: |
+          ECR_REGISTRY="${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com"
+
+          docker push \
+            "${ECR_REGISTRY}/cwvj-mega-backend:${IMAGE_TAG}"
+
+
+  frontend-job:
+    name: Frontend Build, Test and Quality Analysis
+    runs-on: ubuntu-26.04
+    needs: trivy-scan-job
+
+    defaults:
+      run:
+        working-directory: cwvj-3tier-mega-project/frontend
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v7
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: cwvj-3tier-mega-project/frontend/package-lock.json
+
+      - name: Verify Node.js and npm versions
+        run: |
+          node --version
+          npm --version
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend application
+        run: npm run build
+
+      - name: Run frontend tests and generate coverage
+        run: npm run test:coverage
+
+      - name: Inspect frontend build and test outputs
+        run: |
+          echo "=== Frontend Build Outputs ==="
+          ls -lah dist/
+
+          echo "=== Frontend Coverage Reports ==="
+          ls -lah coverage/
+          ls -lah coverage/lcov.info
+
+      - name: Analyze frontend code with SonarQube
+        uses: SonarSource/sonarqube-scan-action@v7
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL }}
+        with:
+          projectBaseDir: cwvj-3tier-mega-project/frontend
+          args: >
+            -Dsonar.projectKey=cwvj-mega-frontend
+            -Dsonar.sources=src
+            -Dsonar.tests=src
+            -Dsonar.test.inclusions=**/*.test.jsx
+            -Dsonar.exclusions=**/*.test.jsx,src/test-setup.js
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+            -Dsonar.qualitygate.wait=true
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: cwvj-3tier-mega-project/frontend/dist
+          if-no-files-found: error
+
+  frontend-image-build-scan-job:
+    name: Build and Scan Frontend Container Image
+    runs-on: ubuntu-26.04
+    needs: frontend-job
+
+    outputs:
+      image-tag: ${{ steps.image-tag.outputs.image_tag }}
+
+    steps:
+
+      # Checkout the repository so the Dockerfile and package.json are available.
+      - name: Checkout source code
+        uses: actions/checkout@v7
+
+      # Download the exact frontend build produced and validated by the frontend job.
+      - name: Download frontend build
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist
+          path: cwvj-3tier-mega-project/frontend/dist
+
+      # Verify that the frontend build artifact is available.
+      - name: Verify frontend build
+        working-directory: cwvj-3tier-mega-project/frontend
+        run: ls -lah dist
+
+      # Read the application version from package.json.
+      - name: Read application version
+        id: app-version
+        working-directory: cwvj-3tier-mega-project/frontend
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      # Generate a readable image tag using the application version and short commit SHA.
+      - name: Generate image tag
+        id: image-tag
+        env:
+          APP_VERSION: ${{ steps.app-version.outputs.version }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE_TAG="${APP_VERSION}-${SHORT_SHA}"
+
+          echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+      # Build the frontend container image using the validated frontend build artifact.
+      - name: Build frontend container image
+        uses: docker/build-push-action@v7
+        with:
+          context: cwvj-3tier-mega-project/frontend
+          file: cwvj-3tier-mega-project/frontend/Dockerfile
+          tags: cwvj-mega-frontend:${{ steps.image-tag.outputs.image_tag }}
+          load: true
+
+      # Display the locally built container image for verification.
+      - name: Verify frontend container image
+        run: docker images cwvj-mega-frontend
+
+      # Scan the container image for HIGH and CRITICAL vulnerabilities.
+      - name: Scan frontend container image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: cwvj-mega-frontend:${{ steps.image-tag.outputs.image_tag }}
+          severity: HIGH,CRITICAL
+          exit-code: '1'
+
+      # Save the exact image that passed the security scan as a Docker archive.
+      - name: Save frontend container image
+        run: |
+          docker save \
+            -o cwvj-mega-frontend.tar \
+            cwvj-mega-frontend:${{ steps.image-tag.outputs.image_tag }}
+
+      # Upload the exact scanned image so a later job can use the same image.
+      - name: Upload frontend container image
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-container-image
+          path: cwvj-mega-frontend.tar
+          if-no-files-found: error
+
+  frontend-ecr-push-job:
+    name: Push Frontend Image to Amazon ECR
+    runs-on: ubuntu-26.04
+    needs: frontend-image-build-scan-job
+
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download frontend container image
+        uses: actions/download-artifact@v8
+        with:
+          name: frontend-container-image
+          path: .
+
+      # Load the exact Docker image produced and scanned by the previous job.
+      - name: Load frontend container image
+        run: docker load -i cwvj-mega-frontend.tar
+
+      # Verify that the expected image and tag are available.
+      - name: Verify frontend container image
+        env:
+          IMAGE_TAG: ${{ needs.frontend-image-build-scan-job.outputs.image-tag }}
+        run: docker images cwvj-mega-frontend:${IMAGE_TAG}
+
+      # Authenticate to AWS using GitHub OIDC and the IAM role created earlier.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # Authenticate Docker with the Amazon ECR registry.
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password \
+            --region "${{ vars.AWS_REGION }}" \
+            | docker login \
+                --username AWS \
+                --password-stdin \
+                "${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com"
+
+      # Tag the local image for the frontend ECR repository.
+      - name: Tag frontend image for Amazon ECR
+        env:
+          IMAGE_TAG: ${{ needs.frontend-image-build-scan-job.outputs.image-tag }}
+        run: |
+          ECR_REGISTRY="${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com"
+
+          docker tag \
+            "cwvj-mega-frontend:${IMAGE_TAG}" \
+            "${ECR_REGISTRY}/cwvj-mega-frontend:${IMAGE_TAG}"
+
+      # Push the exact image that was built and scanned earlier.
+      - name: Push frontend image to Amazon ECR
+        env:
+          IMAGE_TAG: ${{ needs.frontend-image-build-scan-job.outputs.image-tag }}
+        run: |
+          ECR_REGISTRY="${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com"
+
+          docker push \
+            "${ECR_REGISTRY}/cwvj-mega-frontend:${IMAGE_TAG}"
