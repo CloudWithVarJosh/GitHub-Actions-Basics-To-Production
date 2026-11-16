@@ -1,0 +1,125 @@
+name: CWVJ Deploy | DEV
+
+on:
+  workflow_run:
+    workflows:
+      - "CWVJ CI | Build, Scan and Publish"
+    types:
+      - completed
+    branches:
+      - "feature/**"
+      - "bugfix/**"
+      - "hotfix/**"
+
+concurrency:
+  group: cwvj-deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy-to-dev-job:
+    name: Deploy to DEV
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    environment: dev
+
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Check out deployment manifests
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN_DEV }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Find the published image digests
+        env:
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${CI_SHA::7}"
+
+          BACKEND_DIGEST=$(aws ecr describe-images \
+            --repository-name cwvj-mega-backend \
+            --filter tagStatus=TAGGED \
+            --query "imageDetails[?imageTags[?ends_with(@, '-${SHORT_SHA}')]].imageDigest | [0]" \
+            --output json | tr -d '"')
+
+          FRONTEND_DIGEST=$(aws ecr describe-images \
+            --repository-name cwvj-mega-frontend \
+            --filter tagStatus=TAGGED \
+            --query "imageDetails[?imageTags[?ends_with(@, '-${SHORT_SHA}')]].imageDigest | [0]" \
+            --output json | tr -d '"')
+
+          if [[ -z "$BACKEND_DIGEST" || "$BACKEND_DIGEST" == "null" || \
+                -z "$FRONTEND_DIGEST" || "$FRONTEND_DIGEST" == "null" ]]; then
+            echo "Could not find both published images for commit ${CI_SHA}"
+            exit 1
+          fi
+
+          echo "BACKEND_IMAGE=${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/cwvj-mega-backend@${BACKEND_DIGEST}" >> "$GITHUB_ENV"
+
+          echo "FRONTEND_IMAGE=${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/cwvj-mega-frontend@${FRONTEND_DIGEST}" >> "$GITHUB_ENV"
+
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name "${{ vars.EKS_CLUSTER_NAME }}" \
+            --region "${{ vars.AWS_REGION }}"
+
+      - name: Prepare DEV manifests
+        run: |
+          sed -i \
+            -e "s|__BACKEND_IMAGE__|${BACKEND_IMAGE}|g" \
+            -e "s|__DB_NAME__|${{ vars.DB_NAME }}|g" \
+            kubernetes/dev/backend.yaml
+
+          sed -i \
+            -e "s|__FRONTEND_IMAGE__|${FRONTEND_IMAGE}|g" \
+            kubernetes/dev/frontend.yaml
+
+      - name: Deploy to DEV
+        run: kubectl apply -f kubernetes/dev/
+
+      - name: Wait for deployments
+        run: |
+          kubectl rollout status deployment/cwvj-backend -n dev --timeout=5m
+          kubectl rollout status deployment/cwvj-frontend -n dev --timeout=5m
+
+      - name: Show deployed resources
+        run: kubectl get deployments,pods,services -n dev -o wide
+
+      - name: Smoke test DEV frontend
+        run: |
+          kubectl port-forward -n dev service/cwvj-frontend 18080:80 &
+          PORT_FORWARD_PID=$!
+          trap 'kill "$PORT_FORWARD_PID" 2>/dev/null || true' EXIT
+
+          curl --fail --silent --show-error \
+            --retry 10 --retry-connrefused \
+            --max-time 10 \
+            http://127.0.0.1:18080/
+
+  #Calling workflow
+  create-pull-request-job:
+    name: Create Pull Request
+    needs: deploy-to-dev-job
+
+    uses: ./.github/workflows/03-create-pr.yaml
+
+    with:
+      head_branch: ${{ github.event.workflow_run.head_branch }}
+      head_sha: ${{ github.event.workflow_run.head_sha }}
+    permissions:
+      contents: read
+      pull-requests: write

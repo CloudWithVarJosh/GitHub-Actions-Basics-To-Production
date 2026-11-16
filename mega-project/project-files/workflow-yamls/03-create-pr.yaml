@@ -1,0 +1,40 @@
+name: CWVJ PR | Create Pull Request
+
+on:
+  workflow_call:
+    inputs:
+      head_branch:
+        required: true
+        type: string
+      head_sha:
+        required: true
+        type: string
+
+jobs:
+  create-pull-request-job:
+    name: Create Pull Request
+    runs-on: ubuntu-26.04
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Check out the deployed branch
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.head_branch }}
+
+      - name: Verify deployed commit
+        env:
+          DEPLOYED_SHA: ${{ inputs.head_sha }}
+        run: test "$(git rev-parse HEAD)" = "$DEPLOYED_SHA"
+
+      - name: Create or update Pull Request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_BRANCH: ${{ inputs.head_branch }}
+          HEAD_SHA: ${{ inputs.head_sha }}
+        run: |
+          gh pr create --head "$HEAD_BRANCH" --base main --title "Promote $HEAD_BRANCH to main" --body "DEV deployment succeeded for commit $HEAD_SHA. Please review the changes before merging." \
+            || gh pr edit "$HEAD_BRANCH" --body "DEV deployment succeeded for commit $HEAD_SHA. Please review the changes before merging."
