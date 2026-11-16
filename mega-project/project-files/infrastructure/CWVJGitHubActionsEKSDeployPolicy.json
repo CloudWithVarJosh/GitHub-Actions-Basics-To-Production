@@ -1,0 +1,20 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "DescribeEKSCluster",
+            "Effect": "Allow",
+            "Action": "eks:DescribeCluster",
+            "Resource": "arn:aws:eks:ap-south-1:497613475050:cluster/cwvj-mega-demo-eks"
+        },
+        {
+            "Sid": "ReadPublishedECRImageMetadata",
+            "Effect": "Allow",
+            "Action": "ecr:DescribeImages",
+            "Resource": [
+                "arn:aws:ecr:ap-south-1:497613475050:repository/cwvj-mega-backend",
+                "arn:aws:ecr:ap-south-1:497613475050:repository/cwvj-mega-frontend"
+            ]
+        }
+    ]
+}

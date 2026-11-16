@@ -1,0 +1,17 @@
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: cwvj-postgres
+  namespace: prod
+  labels:
+    app.kubernetes.io/name: cwvj-mega-project
+    app.kubernetes.io/instance: cwvj-mega-project-prod
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: cwvj-mega-project
+    app.kubernetes.io/managed-by: github-actions
+  annotations:
+    description: "DNS alias for the shared Amazon RDS PostgreSQL instance"
+spec:
+  type: ExternalName
+  externalName: cwvj-mega-postgres.c7m8gq4y4w13.ap-south-1.rds.amazonaws.com

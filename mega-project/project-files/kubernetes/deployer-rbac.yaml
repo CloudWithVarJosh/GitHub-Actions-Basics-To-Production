@@ -1,0 +1,68 @@
+# Define a reusable set of permissions for GitHub Actions deployments.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: cwvj-github-actions-deployer-cluster-role
+  labels:
+    app.kubernetes.io/name: cwvj-mega-project
+    app.kubernetes.io/part-of: cwvj-mega-project
+    app.kubernetes.io/component: deployment-authorization
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: [""]
+    resources: ["pods", "events"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+
+  # Allow port-forwarding for DEV and PROD smoke tests.
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["create"]
+
+---
+
+# Bind the ClusterRole to the DEV deployment group within the dev namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cwvj-github-actions-deployer-role-binding
+  namespace: dev
+subjects:
+  - kind: Group
+    name: cwvj-github-actions-deployer-dev
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cwvj-github-actions-deployer-cluster-role
+  apiGroup: rbac.authorization.k8s.io
+
+---
+
+# Bind the same ClusterRole to the PROD deployment group within the prod namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: cwvj-github-actions-deployer-role-binding
+  namespace: prod
+subjects:
+  - kind: Group
+    name: cwvj-github-actions-deployer-prod
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cwvj-github-actions-deployer-cluster-role
+  apiGroup: rbac.authorization.k8s.io
