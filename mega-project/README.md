@@ -165,12 +165,29 @@ Before building our CI workflow, let's understand **what our application does an
 | **Spring Boot** | Framework providing the features required to develop the backend application and expose REST APIs |
 | **Maven** | Manages dependencies, invokes compilation and tests, and packages the application into a JAR file |
 
+> **CRUD Operations:** Our backend performs four basic operations on user records stored in PostgreSQL:
+> - **Create (POST):** Add a new user record.
+> - **Read (GET):** Retrieve existing user records and display them in the frontend.
+> - **Update (PUT):** Modify an existing user's details.
+> - **Delete (DELETE):** Remove a user record.
+>
+> The frontend sends these requests to the backend through REST APIs. The backend validates and processes them, while PostgreSQL stores or retrieves the records.
+
 ---
 
 **Tier 3: Database**
 
-- **Amazon RDS for PostgreSQL** stores user records persistently in the `users` table. This ensures that application data remains available even when application containers are restarted or replaced.
-- Database constraints provide an additional layer of **data integrity**, helping prevent invalid or duplicate records from being stored.
+- **Amazon RDS for PostgreSQL** acts as the application's **persistent data store**, maintaining user records in the `users` table independently of the application containers running on Amazon EKS. This is important because **containers are replaceable**. They can restart, scale, or be replaced during deployments without affecting the data stored in RDS. When a new container starts, the application reconnects to the database and continues working with the existing records.
+
+- **Database constraints** provide an additional layer of **data integrity** by enforcing rules at the database level. Constraints such as **PRIMARY KEY, NOT NULL, UNIQUE, and CHECK**, where defined in the schema, help prevent invalid or duplicate data from being persisted. This complements the validation already performed by our backend application.
+
+> **Production Insight: Managed Database Services**
+>
+> In modern cloud architectures, using **managed database services** is a very common approach. Rather than running and managing the database within the application Kubernetes cluster, organizations often use externally hosted, cloud-managed database services such as **Amazon RDS, Google Cloud SQL, and Azure SQL Database**.
+>
+> This is also consistent with my experience over the past **three years**, where most of the RFPs and solution architectures I have worked on have proposed managed database services. This approach allows application teams to leverage the cloud provider's database management capabilities while keeping database operations separate from application workloads.
+>
+> **This does not mean databases cannot run inside Kubernetes.** StatefulSets provide a way to run stateful applications, including databases, on Kubernetes. However, the choice depends on factors such as **operational capabilities, availability requirements, scalability, backup and recovery, security, and cost**. For many enterprise cloud workloads, managed database services are a practical choice.
 
 ---
 
@@ -216,10 +233,11 @@ In this stage, we will understand the project structure and create the initial G
 
 ### Task 1: Understand the Project Directory Structure
 
-We will work with two repositories throughout this project:
+We will work with two separate GitHub repositories throughout this project:
 
-- **Course Repository:** Contains the complete course material, including this write-up and configuration files. Secret YAML templates may be included here with **placeholder values only**, never actual credentials.
-- **GitHub Actions Repository:** Contains only the contents of the `project-files` directory. This is the repository we will use to implement and test our GitHub Actions workflows.
+- **Course Repository:** [GitHub Actions: Basics to Production](https://github.com/CloudWithVarJosh/GitHub-Actions-Basics-To-Production) is the **complete repository for this GitHub Actions course**. It maintains all the lecture notes, documentation, configuration files, and project resources used throughout the course, including the **mega-project covered in this lecture**. You can refer to this repository whenever you need to revisit the concepts or access the associated course files. Any secret YAML templates included here will contain **placeholder values only**, never actual credentials.
+
+- **GitHub Actions Repository:** We will create a separate GitHub repository named **`mega-project-demo`** together during this lecture. This will be our **hands-on working repository**, where you will follow along and implement, test, and validate the GitHub Actions workflows. It will contain only the contents of the `project-files` directory, pushed directly to the root of the repository.
 
 The following is the target directory structure inside `project-files`. It shows where the project components will live as we progress through the course. **Do not create or populate every file at the beginning.** We will introduce files when they are needed.
 
@@ -229,8 +247,6 @@ project-files/
 │   └── workflows/
 │       └── ci.yaml
 │
-├── argocd/
-│
 ├── cwvj-3tier-mega-project/
 │   ├── backend/
 │   ├── frontend/
@@ -238,7 +254,6 @@ project-files/
 │
 ├── infrastructure/
 ├── kubernetes/
-└── README.md
 ```
 
 The main directories have the following purposes:
@@ -301,12 +316,12 @@ This is a **minimal working workflow** containing only a checkout job. We will p
 - **`branches`** restricts automatic execution to the specified development branches. There is intentionally no direct `push` trigger for `main`.
 - **`paths`** filters ensure that the workflow runs only when changes affect the frontend, backend, GitHub Actions workflow files, or Kubernetes manifests.
 - **`workflow_dispatch`** allows us to trigger the workflow manually from the GitHub Actions interface. Manual execution does not use the `push` branch and path filters.
-- **`concurrency`** defines a concurrency group that GitHub uses to manage workflow executions. All runs with the same group identifier are treated as part of that group.
-  - In our configuration, the group identifier includes `${{ github.ref }}`, which identifies the Git reference associated with the workflow run. Therefore, **runs triggered for the same branch belong to the same concurrency group**, while **runs for different branches belong to separate groups**.
-  - **Understanding `${{ github.workspace }}`:**
-    - **`github`** is the GitHub context, an object containing information about the workflow run and its execution environment.
-    - **`workspace`** is a property of the `github` context.
-    - **`${{ }}`** is the expression syntax used by GitHub Actions to evaluate and access dynamic values.
+- **`concurrency`** defines a concurrency group that GitHub uses to manage workflow executions. All runs with the same group identifier belong to the same group.
+  - In our configuration, the group identifier includes `${{ github.ref }}`, which identifies the **Git reference associated with the workflow run**. For example, a push to `feature/login` produces `refs/heads/feature/login`.
+  - Therefore, **runs triggered for the same branch belong to the same concurrency group**, while **runs for different branches belong to separate groups**.
+  - **`github`** is the GitHub context, an object containing information about the workflow run and its execution environment.
+  - **`ref`** is a property of the `github` context that provides the Git reference associated with the workflow run.
+  - **`${{ }}`** is the expression syntax used by GitHub Actions to evaluate dynamic values and access context properties.
 - **`cancel-in-progress: true`** tells GitHub to cancel an already-running execution when a newer run enters the same concurrency group. This ensures that the latest changes take priority over older, outdated CI executions.
 - **`jobs`** defines the jobs that the workflow will execute. Each job contains the steps required to perform a specific task.
 - **`workflow-foundation-job`** is the unique identifier for our initial job.
@@ -402,14 +417,35 @@ ssh-add -l
 
 **How authentication works:**
 
-1. **Git initiates the connection:** When you run `git push`, Git detects that the remote URL uses SSH and invokes the SSH client.
-2. **The SSH client requests authentication:** The SSH client establishes the connection with GitHub and attempts to authenticate using an available private key.
-3. **The SSH agent provides access to the key:** If the key is loaded into the agent, the SSH client asks the agent to perform the required cryptographic signing operation. The private key itself never leaves the agent.
-4. **GitHub verifies the signature:** GitHub uses the corresponding public key registered with your account to verify the signature. If authentication succeeds, Git can proceed with the push, subject to repository permissions and rules.
+1. **Git initiates the connection:** When you run `git push`, Git detects that the remote URL uses SSH and invokes the SSH client to establish a secure connection with GitHub.
 
-> **Important:** The SSH agent is not mandatory for SSH authentication. We are using it to manage access to our project's private key and avoid repeatedly entering its passphrase when the key is encrypted.
+2. **The SSH client offers the public key:** The SSH client offers the **public key** associated with the authentication attempt. GitHub checks whether the key is acceptable. As part of the optional preliminary check, GitHub can respond with `SSH_MSG_USERAUTH_PK_OK` to indicate that the key is acceptable.
 
-> **Production Insight:** Never share or commit your private SSH key to a Git repository. Only the corresponding public key should be registered with GitHub. The private key must remain securely stored on your machine.
+3. **The SSH agent signs the authentication data:** The SSH client requests the SSH agent to generate a **digital signature using the corresponding private key**. The data being signed includes the **SSH session identifier and authentication request information**, binding the signature to the current session. The private key itself never leaves the agent.
+
+4. **GitHub verifies the signature:** GitHub uses the corresponding **public key registered with your account** to verify the signature. Successful verification proves that the client possesses the corresponding private key and completes SSH authentication. GitHub then checks repository permissions and applicable rules to determine whether the push is authorized.
+
+**Authentication Flow:**
+
+```text
+git push → Git invokes SSH client → Secure SSH connection established
+         → SSH client offers registered public key
+         → GitHub checks whether the public key is acceptable
+         → GitHub responds with PK_OK (optional preliminary check)
+         → SSH client requests SSH agent to sign session-bound authentication data
+         → SSH agent signs using the private key
+         → SSH client sends the digital signature to GitHub
+         → GitHub verifies the signature using the registered public key
+         → SSH authentication succeeds
+         → GitHub checks repository permissions and rules
+         → Push accepted
+```
+
+> **Note:** If an SSH agent is not used, the SSH client can access the **private key directly from its file**.
+
+> **Important:** The **SSH agent is not mandatory** for SSH authentication. We are using it to **manage access to our project's private key**.
+
+> **Production Insight:** **Never share or commit your private SSH key** to a Git repository. Only the corresponding **public key** should be registered with GitHub. The **private key must remain securely stored** on your machine.
 
 ---
 
@@ -473,6 +509,7 @@ git push -u origin main
 
 The `-u` option sets the upstream branch. After this initial push, future pushes from the local `main` branch can use `git push`.
 
+**Critical**
 At this point, the initial project structure and workflow exist on GitHub, but **the workflow will not run from this push** because our workflow does not include a `push` trigger for `main`.
 
 **Why are we pushing `main` before enabling the full branch ruleset?** The remote repository is initially empty. This first push establishes the `main` branch. Immediately afterward, we will configure the rules that prevent direct pushes and require changes to go through Pull Requests. We will not start feature-branch development until those rules are in place.
@@ -497,7 +534,7 @@ Our objective is to **prevent direct pushes to `main`** and make Pull Requests t
 
 #### 1.1 Create the Ruleset
 
-1. Go to **Repository → Settings → Rules → Rulesets**.
+1. Go to **Repository → Settings → Rulesets**.
 2. Click **New ruleset → New branch ruleset**.
 3. Set **Ruleset name** to `protect-main`.
 4. Set **Enforcement status** to `Active`.
@@ -513,14 +550,14 @@ Enable the following rules:
 - **Block force pushes:** Prevents force pushes that rewrite the branch history.
 - **Require a pull request before merging:** Ensures that changes reach `main` through a Pull Request rather than a direct push. Configure the following additional settings:
   - **Required approvals: `1`.** Requires at least one approving review from an eligible reviewer before merging.
-  - **Dismiss stale pull request approvals when new commits are pushed:** Enable this option so that an approval is invalidated when new commits are added to the Pull Request.
+  - **Dismiss stale pull request approvals when new commits are pushed:** Enable this option to ensure that reviewers approve the latest changes, not an earlier version of the code.
+    - If new commits are pushed while a PR is **awaiting approval**, the PR remains open with the new changes and still requires approval.
+    - If a PR has **already been approved but has not yet been merged**, and new commits that change the code are pushed, GitHub dismisses the previous approval. The updated PR must be reviewed and approved again before it can be merged.
   - **Require approval of the most recent reviewable push:** Enable this option so that the latest reviewable changes must be approved by someone other than the person who made that push.
   - **Require conversation resolution before merging:** Enable this option so that review conversations must be resolved before a Pull Request can be merged.
   - **Allowed merge methods: `Squash`.** Allows a Pull Request to be merged into a single commit on the target branch.
   - **Require review from specific teams:** Leave unchecked because our demo uses a separate reviewer account rather than a designated review team.
   - **Require an additional approval for unattributed Copilot pull requests:** Leave disabled unless you specifically want to demonstrate this feature. When enabled, it adds an approval requirement for certain Copilot-created Pull Requests.
-
-**Do not enable `Require status checks to pass` yet.** We will configure it after `01-ci.yaml` has completed successfully and GitHub can identify the status checks to require.
 
 For now, leave **Require branches to be up to date before merging** unchecked as well. We will enable it alongside the required status checks so that the PR branch must be up to date with `main` before merging.
 
@@ -530,13 +567,6 @@ For now, leave **Require branches to be up to date before merging** unchecked as
 
 Once the configuration is complete, click **Create ruleset** to save and activate the branch protection rules.
 
----
-
-> **Important: Enable required status checks later**
->
-> Do not configure **required status checks** at this stage. Once our CI workflow has completed successfully, we will return to the ruleset and select the appropriate **CI checks as required status checks**.
->
-> We will also enable **Require branches to be up to date before merging** at that point, ensuring that the **Pull Request branch is synchronized with `main`** before merging.
 
 > **Production Insight:**
 > Protecting `main` from **direct pushes** and requiring **independent code reviews** establishes a controlled process for introducing changes into the production codebase. We will progressively strengthen these controls as our **CI/CD workflows** take shape.
@@ -628,7 +658,9 @@ The `-u` option establishes the upstream branch so future pushes from this local
 
 ### Task 2: Understand Why the Push Does Not Trigger CI
 
-This push matches the **branch** condition in our workflow:
+Our initial push to `feature/initial-ci` did not trigger the CI workflow. Let's understand why.
+
+Our workflow has the following branch filter:
 
 ```yaml
 push:
@@ -638,7 +670,9 @@ push:
     - 'hotfix/**'
 ```
 
-However, the workflow also has a **`paths` filter**:
+The branch `feature/initial-ci` matches this condition.
+
+However, our workflow also has a **`paths` filter**:
 
 ```yaml
 paths:
@@ -647,29 +681,40 @@ paths:
   - '.github/workflows/**'
 ```
 
-Because `feature/initial-ci` was created from the same commit as `main` and no new changes were introduced under these paths, there are no matching file changes for the push event. **The branch condition matches, but the workflow is skipped by the `paths` filter.**
+This filter tells GitHub to run CI only when the push includes changes to at least one of these paths.
 
-This is exactly why we added `workflow_dispatch` to the workflow. It allows us to **manually trigger the workflow from the GitHub Actions UI without making an unnecessary code change just to trigger CI**.
+Since `feature/initial-ci` was created from the same commit as `main`, **the push introduced no new changes matching these paths**.
 
-The current flow is therefore:
+Therefore:
+- **Branch filter:** Passed. `feature/initial-ci` matches `feature/**`.
+- **Path filter:** Not satisfied. No matching file changes were found.
+- **Result:** GitHub does not start an automatic CI run.
+
+> **What if we had not configured the `paths` filter?** The branch condition alone would have been sufficient, and the push to `feature/initial-ci` would have triggered CI.
+
+This is exactly why we added **`workflow_dispatch`** to the workflow. It allows us to manually trigger CI from the GitHub Actions UI without making an unnecessary code change just to start a run.
+
+The overall flow is:
 
 ```text
-Local main → Push initial code to GitHub main → Protect main and create environments → Create feature/initial-ci → Push feature branch → Branch filter matches → Paths filter finds no matching changes → Automatic workflow run is skipped → Manually trigger via workflow_dispatch → GitHub Actions runner → Checkout source code → Success
+Push feature/initial-ci → Branch filter matches → Paths filter finds no matching changes → Automatic CI run skipped → Manually trigger via workflow_dispatch → CI workflow executes successfully
 ```
 
-> **Production Insight:** Path filters help avoid unnecessary CI executions when a change cannot affect the application or workflow. At the same time, `workflow_dispatch` provides a controlled way to run the workflow on demand for testing, troubleshooting, or operational purposes.
+> **Production Insight:** Path filters help avoid unnecessary CI executions when changes do not affect the application or its workflows. At the same time, `workflow_dispatch` provides a way to run CI manually for testing, troubleshooting, or other operational needs.
 
 ---
 
-### Task 3: Verify the Workflow Execution
+### Task 3: Run and Verify the Workflow
 
 #### Step 1: Open and Run the Workflow
 
-Go to **GitHub → Repository → Actions**.
+1. Navigate to **GitHub Repository → Actions → All workflows** and select **`CWVJ CI | Build, Scan and Publish`**.
 
-Select the workflow named **`CWVJ CI | Build, Scan and Publish`**. Click **Run workflow**, select the `feature/initial-ci` branch if required, and manually start the workflow.
+2. Click **Run workflow**. Under **Use workflow from**, select `feature/initial-ci`, then click **Run workflow** to manually start the execution.
 
-The workflow file must exist on the repository's default branch for `workflow_dispatch` to be available. We pushed `ci.yaml` to `main` in Stage 2, so this requirement is satisfied.
+3. Once the workflow starts, open the run and verify that all jobs complete successfully.
+
+> **Critical Note:** The workflow file must exist on the repository's **default branch (`main`)** for `workflow_dispatch` to be available. We pushed `ci.yaml` to `main` in Stage 2, so this requirement is satisfied. Selecting `feature/initial-ci` under **Use workflow from** ensures that the workflow runs using that branch's revision.
 
 ---
 
@@ -727,33 +772,71 @@ Open `.github/workflows/ci.yaml` and **remove the existing `workflow-foundation-
 **Reference:** [Trivy Action Documentation](https://github.com/marketplace/actions/aqua-security-trivy)
 
 ```yaml
-  trivy-scan-job:
-    name: Repository Filesystem Security Scan
-    runs-on: ubuntu-26.04
+trivy-scan-job:
+  name: Repository Security Scan
+  runs-on: ubuntu-26.04
 
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v7
+  steps:
+    - name: Checkout source code
+      uses: actions/checkout@v7
 
-      - name: Run Trivy repository filesystem scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: ${{ github.workspace }}
-          severity: HIGH,CRITICAL
-          exit-code: '1'
+    - name: Run Trivy repository security scan
+      uses: aquasecurity/trivy-action@v0.36.0
+      with:
+        scan-type: repo
+        scan-ref: ${{ github.workspace }}
+        severity: HIGH,CRITICAL
+        exit-code: '1'
 ```
 
 #### Explanation
 
-- **Dedicated security job:** `trivy-scan-job` is responsible for scanning the repository for security issues. We retain the checkout step because **every GitHub-hosted job runs in its own environment** and needs to retrieve the source code independently.
-- **Filesystem scanning:** `scan-type: fs` tells Trivy to scan the filesystem rather than a container image. The `scan-ref` value, `${{ github.workspace }}`, points to the checked-out repository, allowing Trivy to inspect the **application source, dependency manifests, lockfiles, and other supported files**.
-- **Severity filtering:** `severity: HIGH,CRITICAL` restricts the reported findings to **High and Critical severity**. This helps us focus on more serious issues during this initial implementation.
-- **Failure behavior:** `exit-code: '1'` makes the Trivy step return a failure exit code when findings matching the configured severity are detected. This causes the **step to fail**, which in turn causes the **job to fail**. Consequently, the **workflow is marked as failed**, making the security findings visible in the workflow result.
+- **`trivy-scan-job`** is a dedicated job responsible for scanning the repository for security issues.
+  - **Checkout source code:** We use `actions/checkout@v7` because each job runs in its own runner environment and needs to retrieve the source code independently.
 
-> **Important:** Filesystem scanning can detect different categories of issues, including **dependency vulnerabilities, misconfigurations, and exposed secrets**, depending on the scanners enabled and the files present in the repository. This configuration explicitly sets the severity filter and failure behavior, but does not explicitly enable every scanner category.
+- **Repository scanning:**
+  - **`scan-type: repo`** tells Trivy to scan a Git repository. The Trivy Action defaults to `image` scanning, so we explicitly specify `repo` for this step.
+  - **`scan-ref: ${{ github.workspace }}`** points Trivy to the root directory of our checked-out repository.
+  - Trivy examines supported dependency files and lockfiles to identify known vulnerabilities. It also scans repository files for exposed secrets.
+  - **Important:** Repository scanning does not inspect compiled artifacts such as JAR files or operating-system packages inside container images. We handle container image scanning separately.
 
-> **Production Insight:** GitHub Actions jobs run independently unless we define dependencies using `needs`. Therefore, the **Trivy scan, backend build and test, and frontend build can run in parallel**. A failed Trivy scan will **not automatically cancel the other jobs**. Later, we can introduce dependencies where a successful security scan must be a prerequisite for subsequent stages.
+- **Understanding the scanners:** Trivy supports four scanner types. In repository mode, **vulnerability and secret scanning are enabled by default**, while misconfiguration and license scanning are disabled. Since we have not specified the `scanners` input, Trivy uses these defaults.
+
+  | Scanner | Default | Purpose |
+  |---|---|---|
+  | `vuln` | Enabled | Detects known vulnerabilities in supported application dependencies. |
+  | `secret` | Enabled | Detects exposed credentials, API keys, tokens, and other sensitive information. |
+  | `misconfig` | Disabled | Detects security misconfigurations in supported files, such as Kubernetes manifests and Terraform configurations. |
+  | `license` | Disabled | Identifies licenses associated with application dependencies. |
+
+  > **Important:** Our current scan does not check Kubernetes manifests for security misconfigurations because `misconfig` is not enabled. Users can explore this scanner as an enhancement by explicitly configuring `scanners: vuln,misconfig,secret`.
+
+- **Severity filtering:** `severity: HIGH,CRITICAL` limits the scan results to findings classified as **High or Critical**. This helps us focus on more serious security issues.
+
+- **Failure behavior:** `exit-code: '1'` instructs Trivy to return a non-zero exit code when matching findings are detected. GitHub Actions then marks the step and job as **failed**.
+
+- **Job dependencies:** Jobs that declare `needs: trivy-scan-job` must wait for the security scan to succeed before starting. If this job fails, its dependent jobs are **skipped by default**. Independent jobs can still run.
+
+> **Handling Accepted Security Findings:** Trivy allows us to exclude specific findings from scan results using an ignore file named **`.trivyignore`**, maintained in the repository.
+>
+> - Add the relevant finding IDs (such as CVE IDs, misconfiguration IDs, or secret rule IDs) to this file.
+> - Reference the ignore file in the Trivy Action using `trivyignores: .trivyignore`.
+> - Trivy skips the listed findings when evaluating scan results. Other findings are still reported and can cause the job to fail based on our configured severity and exit-code settings.
+>
+> **Example:**
+>
+> ```yaml
+> - name: Run Trivy repository security scan
+>   uses: aquasecurity/trivy-action@v0.36.0
+>   with:
+>     scan-type: repo
+>     scan-ref: ${{ github.workspace }}
+>     severity: HIGH,CRITICAL
+>     exit-code: '1'
+>     trivyignores: .trivyignore
+> ```
+>
+> **Important:** Ignoring a finding does not fix the underlying issue. Use exceptions only for **reviewed false positives or formally accepted risks**. Never suppress an actual exposed credential; remove and rotate it instead.
 
 
 ---
@@ -919,6 +1002,17 @@ jobs:
 
       - name: Build, test, and package backend
         run: mvn --batch-mode clean verify
+
+      - name: Inspect backend build outputs
+        run: |
+          echo "=== Maven Build Outputs ==="
+          ls -lah target/
+
+          echo "=== Unit Test Reports ==="
+          ls -lah target/surefire-reports/
+
+          echo "=== JaCoCo Coverage Reports ==="
+          ls -lah target/site/jacoco/
 ```
 
 #### Explanation
@@ -938,9 +1032,21 @@ jobs:
 * **`name`** provides the human-readable name displayed for the job in the GitHub Actions UI.
 * **`runs-on: ubuntu-26.04`** specifies the **GitHub-hosted runner environment** on which GitHub Actions provisions and executes the job. In this case, the job runs on a virtual machine with **Ubuntu 26.04**.
   > **Production Insight:** Pinning a specific runner OS version, such as `ubuntu-26.04`, helps provide a **more predictable and consistent build environment**. In production implementations, avoid using `ubuntu-latest` without careful consideration. Newer runner images may introduce changes to preinstalled tools, dependencies, or system libraries, potentially affecting compatibility with your application or build process. **Use the `-latest` tag with caution** when predictable and reproducible workflow execution is important.
-* **`needs: trivy-scan-job`** establishes a dependency on the Trivy repository filesystem scan. The backend job runs only after the scan succeeds, and is skipped by default if the scan fails. Once Trivy succeeds, the backend job can run in parallel with the frontend job.
+- **`needs: trivy-scan-job`** establishes a dependency on the Trivy repository filesystem scan. GitHub Actions jobs **run in parallel by default** unless dependencies are defined. Here, the backend job waits for the Trivy job to **complete**, but runs only if the scan **succeeds**. If the Trivy job fails, the backend job is **skipped by default**, preventing unnecessary runner resource consumption on a repository that has already failed its security scan. *(We will introduce the frontend job shortly, with the same dependency on Trivy.)*
 
 > **Production Insight:** GitHub-hosted runner labels such as `ubuntu-latest` are managed by GitHub and can move to newer OS versions over time. This provides access to supported runner environments, but production workflows with strict OS compatibility requirements may benefit from a **specific runner image** or a controlled, versioned self-hosted runner environment.
+
+> **Note: Default Failure Behavior in GitHub Actions**
+>
+> By default, GitHub Actions follows this behavior:
+>
+> - **Step failure:** If a step fails, the **job is marked as failed**, and subsequent steps are **skipped by default**.
+> - **Job failure:** Jobs that depend on the failed job through `needs` are **skipped by default**. However, **independent jobs continue executing**.
+> - **Workflow status:** If a job fails, the overall **workflow run is marked as failed**, unless the failure is explicitly tolerated using configurations such as `continue-on-error: true`.
+>
+> This default behavior can be modified using **status check functions** in `if` conditions, such as `success()`, `failure()`, `always()`, and `cancelled()`. We covered these functions in **Lecture 05**.
+>
+> **Note:** `continue-on-error` is a separate configuration that can also change how step and job failures affect workflow execution.
 
 ---
 
@@ -959,7 +1065,7 @@ defaults:
 - As a result, commands such as `mvn clean verify` can be executed directly without repeatedly specifying the backend's complete path.
 - This is necessary because our backend resides inside **`cwvj-3tier-mega-project/backend`**, rather than at the repository root.
 
-  > **Production Insight:** Job-level working directories are particularly useful in **monorepos**, where multiple applications can share one repository while using different build tools and directory structures. For example, the backend job can execute Maven commands from the backend directory, while the frontend job can execute npm commands from the frontend directory.
+  > **Production Insight:** Job-level working directories are particularly useful in **monorepos**, where multiple applications share a **single repository** but have different directory structures and build tools. For example, the **backend job** can execute Maven commands from the backend directory, while the **frontend job** executes npm commands from the frontend directory. This keeps each job's commands organized and avoids repeatedly specifying directory paths.
 
 **Monorepo vs. multi-repository architecture:**
 
@@ -997,27 +1103,34 @@ Service A Repository → Service A Workflow
 - **`distribution: temurin`** selects the Eclipse Temurin Java distribution.
 
   > **Why Temurin?** It provides a widely used OpenJDK distribution, giving us a **consistent Java runtime** for our CI environment.
+  > **Note: Understanding Java Distributions**
+
+  > Java is available through multiple **JDK distributions**, maintained by different vendors. **Eclipse Temurin** is one such distribution. Other examples include **Amazon Corretto, Azul Zulu, Microsoft Build of OpenJDK, Oracle JDK, and BellSoft Liberica**.
+  >
+  > In `actions/setup-java`, the **`distribution`** parameter selects the JDK vendor distribution, while **`java-version`** specifies the Java version. We use **Eclipse Temurin with Java 21** in this project.
 
 - **`java-version: '21'`** ensures that CI uses Java 21, matching the version configured for our application.
 
-  > **Production Insight:** Explicitly defining the Java version prevents builds from depending on the runner's preinstalled version, reducing **environment drift** and improving **build reproducibility**.
+  > **Production Insight:** Our GitHub-hosted Ubuntu 26.04 runner already has **Java 21 pre-installed**, but **Java 25 is configured as the default**. The `actions/setup-java` action checks whether the requested Java version is already available in the runner's tool cache. If a matching installation exists, it **reuses it without downloading Java again**. If the requested version is not available, the action **downloads and installs it**. It then configures **`JAVA_HOME` and `PATH`** to ensure subsequent commands use the requested Java version. This ensures that our CI workflow uses the **Java version required by the application**, rather than relying on the runner's default.
 
-- **`cache: maven`** enables Maven dependency caching through `setup-java`. Maven's local repository, normally `~/.m2/repository`, stores downloaded dependencies and other artifacts that can be reused across workflow runs.
+- **`cache: maven`** enables **Maven dependency caching** through `setup-java`. It caches Maven's local repository, normally located at `~/.m2/repository`, which stores **downloaded project dependencies and build-plugin artifacts** that can be reused across workflow runs.
 
-- **`cache-dependency-path: cwvj-3tier-mega-project/backend/pom.xml`** explicitly specifies the `pom.xml` file used to calculate the Maven dependency cache key. Although `setup-java` can automatically discover Maven dependency files across the repository, specifying the path ensures that the cache key is based on **our backend's dependencies** rather than relying on automatic discovery of all matching files.
-  - **Why is this useful?** This is particularly useful in **monorepos containing multiple applications or Maven projects**, where each application may have its own dependency file and should have its own dependency cache.
+- **`cache-dependency-path: cwvj-3tier-mega-project/backend/pom.xml`** explicitly specifies the **dependency file used to calculate the Maven cache key**. By default, `setup-java` automatically discovers Maven dependency files across the repository, including matching `pom.xml` files. Specifying this path makes the cache key reflect **our backend's Maven project configuration**, rather than automatically including dependency files from other Maven projects.
+  - **Why is this useful?** This is particularly useful in **monorepos containing multiple Maven projects**, where each project can have its own dependency file and corresponding cache key.
 
-  > **How caching works:** `setup-java` calculates the cache key using the specified file's contents. On subsequent runs, GitHub Actions looks for a matching cache and restores it if available. Maven can then reuse the restored dependencies and download only the required artifacts that are missing.
-  > **Production Insight:** Explicitly specifying the dependency file is particularly useful in **monorepos** containing multiple Maven projects because it identifies which project's dependencies determine the cache key.
+  > **How caching works:** `setup-java` generates the **primary dependency cache key** using the **runner OS, Node.js process architecture, package manager, and a hash of the dependency files**. In our configuration, `cache-dependency-path` specifies the backend's `pom.xml` for calculating the file hash. On subsequent runs, GitHub Actions looks for a matching cache and restores it if available. Maven can then **reuse the restored dependencies** and download any missing artifacts. The cache is saved after the job so that subsequent workflow runs can reuse it.
+
+  > **Production Insight:** Explicitly specifying the dependency file is particularly useful in **monorepos** containing multiple Maven projects because it allows each project's **dependency configuration to determine its cache key**, instead of relying on automatic discovery across the repository.
 
 **Note:** `defaults.run.working-directory` sets the default directory for shell commands executed by `run` steps. It is similar to Docker's `WORKDIR` instruction, but it does **not** control how `setup-java` locates the `pom.xml` or where Maven stores its dependencies.
 
 > **How Maven dependency caching works:**
+>
 > 1. **`cache: maven`** enables caching of Maven's local repository (`~/.m2/repository`).
-> 2. **`cache-dependency-path`** identifies the `pom.xml` file used to calculate the cache key.
-> 3. **`setup-java`** looks for a matching cache and restores it if available.
-> 4. If no matching cache is available, Maven downloads any required dependencies that are missing from the local repository.
-> 5. **At the end of the job**, `setup-java` saves the cache when appropriate, allowing subsequent workflow runs to reuse it.
+> 2. **`cache-dependency-path`** identifies the `pom.xml` file used to calculate the dependency cache key.
+> 3. **`setup-java`** checks for a matching cache and restores it if available.
+> 4. Maven reuses the **restored dependencies** and downloads any required artifacts that are missing from the local repository.
+> 5. **At the end of the job**, `setup-java` saves the local repository to the cache if a matching cache was not found. **An existing cache is not updated or saved again when there is a cache hit.**
 
 ---
 
@@ -1169,6 +1282,7 @@ frontend-job:
         ls -lah coverage/
         ls -lah coverage/lcov.info
 ```
+---
 
 #### Explanation
 
@@ -1219,24 +1333,29 @@ defaults:
 ```
 
 - This step configures **Node.js** for the React frontend using GitHub's official **`actions/setup-node@v6`** action.
-- **`node-version: '22'`** selects Node.js 22 for the CI environment.
-- **`cache: npm`** enables caching of npm's package cache, which stores downloaded package data. On GitHub-hosted Ubuntu runners, npm's cache is typically located under `~/.npm`.
-- **`cache-dependency-path`** identifies the lockfile whose contents are hashed to generate the dependency cache key.
+  > **Why do we need Node.js for a React + Vite + NGINX frontend?** React and Vite use the Node.js ecosystem during development and the build process. In our CI workflow, Node.js provides the runtime required to install frontend dependencies using `npm` and execute the Vite build command, which compiles the React application into static HTML, CSS, and JavaScript files. These generated files are then packaged into our NGINX container image. **Node.js is required during the build process; we do not need Node.js to serve the application in production because NGINX serves the generated static files.**
+
+- **`node-version: '22'`** selects **Node.js 22** for the CI environment.
+  > **Note:** The Ubuntu 26.04 runner image release referenced in our setup already includes **Node.js 22.23.4 in its tool cache**. Since we specify `node-version: '22'`, `actions/setup-node@v6` finds and **reuses the existing installation** rather than downloading Node.js again. It selects the cached version and adds it to `PATH` for subsequent workflow steps. If a matching version is not available in the runner's tool cache, the action **downloads the requested version**.
+
+- **`cache: npm`** enables caching of **npm's global package cache**, which stores downloaded package data. On GitHub-hosted Ubuntu runners, npm's cache is normally located at **`~/.npm`**.
+
+- **`cache-dependency-path`** identifies the **dependency lockfile** whose contents are hashed and used as part of the dependency cache key.
 
 **What is `package-lock.json`?**
 
-It records the exact dependency versions and their relationships, helping ensure consistent dependency installations across developers' machines and CI runs.
+It records the **exact dependency tree**, including the resolved package versions and their relationships. This helps ensure that developers' machines and CI environments can install a **consistent set of dependencies**.
 
 **What exactly gets cached?**
 
-- GitHub Actions caches the contents of **npm's package cache (`~/.npm`)**, not the project's `node_modules` directory.
-- The `package-lock.json` file itself is **not cached**. Its contents are hashed to generate the cache key.
-- When the lockfile remains unchanged, GitHub Actions can restore a matching cache, allowing npm to reuse previously downloaded package data instead of downloading everything again.
-- When the lockfile changes, a different cache key is generated, allowing a new cache to be created.
+- GitHub Actions caches the contents of **npm's package cache (normally `~/.npm` on Ubuntu)**, not the project's `node_modules` directory.
+- The **`package-lock.json` file itself is not cached**. Its contents are hashed and used as part of the cache key.
+- When the lockfile remains unchanged, GitHub Actions can restore a **matching cache**, allowing npm to reuse previously downloaded package data and reduce repeated downloads.
+- When the lockfile changes, its hash changes, resulting in a **different cache key**. A new cache can then be saved for subsequent workflow runs, provided the job completes successfully.
 
 **Why specify `cache-dependency-path`?**
 
-Our `package-lock.json` is located inside `cwvj-3tier-mega-project/frontend`, not at the repository root. By default, `setup-node` searches for dependency files in the **repository root**. It does not automatically search arbitrary subdirectories.
+Our `package-lock.json` is located inside `cwvj-3tier-mega-project/frontend`, not at the repository root. By default, `setup-node` searches for supported dependency files in the **repository root**. It does not automatically search arbitrary subdirectories.
 
 Specifying the path explicitly ensures that the cache key is calculated using the **frontend's dependency lockfile**.
 
@@ -1244,7 +1363,7 @@ Specifying the path explicitly ensures that the cache key is calculated using th
 
 - The frontend uses **npm caching with `package-lock.json`**, while the backend uses **Maven caching with `pom.xml`**. Both use their respective dependency files to generate cache keys and accelerate subsequent dependency installations.
 
-> **Production Insight:** Configure dependency caching using each application's **native package manager and dependency lock or configuration files**. Explicitly specifying dependency-file paths in monorepos helps ensure that cache keys reflect the dependencies of the intended application, making cache invalidation more predictable and reducing unnecessary downloads.
+> **Production Insight:** Configure dependency caching using each application's **native package manager and dependency lock or configuration files**. Explicitly specifying dependency-file paths in monorepos helps ensure that cache keys reflect the dependencies of the intended application, making cache management more predictable and reducing unnecessary downloads.
 
 ---
 
@@ -1267,13 +1386,20 @@ Specifying the path explicitly ensures that the cache key is calculated using th
   run: npm ci
 ```
 
-- **`package.json`** declares the application's direct dependencies and their acceptable version ranges. Developers maintain this file when adding or removing dependencies.
-- **`package-lock.json`** is automatically created and updated by npm. It records the exact resolved versions and dependency relationships of both direct and transitive dependencies. Developers generally do not maintain this file manually.
-- **`npm ci`** installs the complete dependency tree using the exact versions recorded in `package-lock.json`, ensuring consistent installations across developers' machines and CI environments.
-- **`npm ci`** is designed for clean, automated environments such as CI runners. It requires an existing lockfile consistent with `package.json` and fails if they are out of sync. It does not modify either file.
-- It removes any existing **`node_modules`** directory before installing dependencies, ensuring a **clean dependency installation**.
+- **`package.json`** declares the application's **direct dependencies** and their acceptable version ranges. Developers update this file when adding, removing, or changing dependencies.
 
-> **Production Insight:** Commit both `package.json` and `package-lock.json` to Git. Using **`npm ci`** in CI ensures that repeated executions install the **same resolved dependency versions**, reducing unexpected differences between builds.
+- **`package-lock.json`** is automatically generated and updated by npm when dependencies are installed or modified. It records the **exact resolved versions and dependency relationships** of both direct and transitive dependencies.
+
+  > **Important:** The `package-lock.json` file must already exist in the repository before our CI workflow runs. Developers should run **`npm install` locally** to generate or update the lockfile whenever dependencies are initially installed or modified. Both **`package.json` and `package-lock.json` must be committed to Git**. Our GitHub Actions workflow uses the committed lockfile to calculate the **dependency cache key** and subsequently runs `npm ci` to install the dependencies.
+
+- **`npm ci`** installs the dependency tree using the **exact versions recorded in `package-lock.json`**, rather than resolving dependency versions again using the version ranges in `package.json`.
+  > `npm ci`**&#x20;(Continuous Integration):** Installs dependencies strictly from `package-lock.json` without modifying it. It also removes the existing `node_modules` directory before installation, ensuring **consistent and reproducible dependency versions** in CI builds.
+
+- **`npm ci`** is designed for **clean, automated environments**, such as CI runners. It requires an existing lockfile that is consistent with `package.json` and **fails if the two files are out of sync**. It does not modify either file.
+
+- Before installing dependencies, **`npm ci` removes the existing `node_modules` directory**, ensuring a **clean dependency installation** based on the committed lockfile.
+
+> **Production Insight:** Always commit both **`package.json` and `package-lock.json`** to Git. Using **`npm ci`** in CI ensures that repeated executions install the **same resolved dependency versions**, reducing unexpected dependency differences between builds and improving **build consistency and reproducibility**.
 
 ---
 
@@ -1460,11 +1586,21 @@ Let's understand some of the important configuration options:
 
 - **`metadata`** defines the cluster name, AWS Region, Kubernetes version, and tags associated with the cluster. We are deploying the cluster in `ap-south-1` (Mumbai).
 - **`availabilityZones`** specifies two Availability Zones for the cluster's networking infrastructure, helping distribute resources across separate zones.
-- **`iam.withOIDC: true`** enables the cluster's OpenID Connect (OIDC) provider, which we can use later to configure IAM Roles for Service Accounts and integrate Kubernetes workloads with AWS IAM.
-  > **Note:** We do not need `iam.withOIDC: true` for this demo. However, we will keep it enabled so that, later in the course, we can **contrast the EKS cluster's OIDC integration for Kubernetes workloads** with the separate **GitHub Actions OIDC integration** used to **authenticate GitHub Actions workflows with AWS**.
+- **`iam.withOIDC: true`** tells `eksctl` to register the EKS cluster's **OIDC issuer URL with AWS IAM**. AWS represents this registration as an **IAM OIDC identity provider**. This does not mean IAM issues the tokens. **The EKS OIDC issuer is the actual token issuer**; IAM maintains the trusted issuer configuration, allowing Amazon STS to validate tokens issued for Kubernetes Service Accounts.
+
+  This is a prerequisite for configuring **IAM Roles for Service Accounts (IRSA)**. We can then create IAM roles whose trust policies allow specific Kubernetes Service Accounts to assume those roles using `sts:AssumeRoleWithWebIdentity` and receive **temporary AWS credentials**.
+
+  > **Note:** Registering the EKS OIDC issuer with IAM alone does not grant AWS permissions to our Pods. We also need an IAM role with an appropriate trust policy and a Kubernetes Service Account associated with that role.
+
+  > Our application workloads do not need AWS API access in this demo. However, we keep this setting enabled so that, later in the course, we can **contrast the EKS workload OIDC integration (IRSA)** with the separate **GitHub Actions OIDC integration**, which allows GitHub Actions workflows to authenticate with AWS.
 - **`managedNodeGroups`** defines the worker nodes that will run our application workloads. We are creating two nodes using the `c7i-flex.large` instance type, with the desired, minimum, and maximum capacity all set to two.
 - **`volumeSize`, `volumeType`, and `volumeEncrypted`** configure the worker nodes' root EBS volumes, using 20 GiB `gp3` volumes with encryption enabled.
 - **`privateNetworking: false`** means the worker nodes will use public subnets created by `eksctl`. This simplifies our lab setup, but production environments commonly place worker nodes in private subnets and control access through appropriate networking and security controls.
+  > **Note:** We have set **`privateNetworking: false`** because, for this lab, we will access our application using **Kubernetes NodePort**. This places the worker nodes in **public subnets**, simplifying application access for our demonstration.
+  >
+  > In production environments, worker nodes are commonly placed in **private subnets**, with application access controlled through appropriate networking and security configurations.
+  >
+  > **Further Exploration:** In this project, we are using **NodePort** to access the application. However, I encourage you to explore **Kubernetes Ingress** as an alternative approach. The **Cloud With VarJosh YouTube channel** already has a detailed [Ingress demonstration](https://www.youtube.com/watch?v=ngyegIE_5FM&ab_channel=CloudWithVarJosh). Try implementing Ingress in this project to gain additional hands-on experience.
 - **`labels`** define Kubernetes labels for the worker nodes. In our example, `project=cwvj-mega-demo` and `workload=general` help us identify and select nodes based on their purpose. Kubernetes labels can later be used with node selectors, affinity rules, and other scheduling mechanisms to control where workloads run.
 - **`tags`** are AWS resource metadata used for identification, cost allocation, reporting, automation, and governance. We have included tags such as `owner`, `project`, `purpose`, and `managed-by` to make it easier to identify resources belonging to this project. The `node-type` tag further identifies the intended role of the worker nodes.
 
@@ -1541,10 +1677,13 @@ This approach **reuses the existing public routing configuration** while keeping
 
 For this project, we will keep **EKS, SonarQube, and Amazon RDS in the same VPC**. This allows us to establish private network connectivity between these resources without introducing additional VPCs and inter-VPC connectivity mechanisms.
 
-We have one application in this lab, so we will use **one Amazon RDS instance** to keep the setup simple and cost-effective. Within this RDS instance, we will create two databases:
+To keep the infrastructure **simple and cost-effective**, we will use **one Amazon RDS for PostgreSQL instance** and create **three separate databases** within it:
 
-- **SonarQube database:** Stores the information SonarQube needs to operate.
-- **Application database:** Stores data for our application.
+- **SonarQube database:** Stores the information required by SonarQube, such as projects, code analysis results, and configuration.
+- **DEV application database:** Stores the data used by our DEV application environment.
+- **PROD application database:** Stores the data used by our PROD application environment, keeping it separate from DEV data.
+
+This approach allows all three databases to share the same RDS instance while keeping their data logically separated.
 
 An RDS instance can host multiple databases, depending on the database engine and its capabilities. This approach is suitable for our lab, but separate RDS instances may be more appropriate when workloads have different security, performance, availability, or maintenance requirements.
 
@@ -1569,8 +1708,8 @@ We have provided a script to create the networking resources required for **Sona
 Navigate to the directory containing the script and execute the following commands:
 
 ```bash
-# Grant execute permission to the networking setup script.
-chmod +x setup-mega-project-network.sh
+# Grant execute permission to the file owner only.
+chmod u+x setup-mega-project-network.sh
 
 # Execute the script to create the networking resources for this lab.
 ./setup-mega-project-network.sh
@@ -1599,14 +1738,27 @@ We will follow the **principle of least privilege**, allowing only the network t
 
 #### Create a Security Group for SonarQube
 
-Create a security group for our SonarQube instance in the **same VPC as our EKS cluster**.
+Create a security group named **`cwvj-sonarqube-sg`** for our SonarQube instance in the **same VPC as our EKS cluster**.
 
 Configure the following rules:
 
 | Direction | Protocol | Port | Source/Destination | Purpose |
 |---|---|---:|---|---|
-| Inbound | TCP | 9000 | `0.0.0.0/0` and `::/0` | Allow access over IPv4 and IPv6 |
-| Outbound | Default rules | All | Default destinations | Allow package updates, software downloads, and database connectivity |
+| Inbound | TCP | 22 | Your public IP address (`x.x.x.x/32`) | Allow SSH access to the EC2 instance for administration. |
+| Inbound | TCP | 9000 | `0.0.0.0/0` and `::/0` | Allow access to the SonarQube web interface over IPv4 and IPv6. |
+| Outbound | Default rules | All | Default destinations | Allow package updates, software downloads, and database connectivity. |
+
+> **Important:** Restrict SSH access to **your own public IP address**. In the AWS console, select **My IP** when configuring the source. Do not use `0.0.0.0/0` for SSH access. If your public IP address changes, update the security group rule accordingly.
+
+> **Production Insight:** Allowing public access to SonarQube on port `9000` is a **lab-only simplification**. In production, restrict access to trusted networks, a VPN, or an approved load balancer or reverse proxy, and use HTTPS.
+
+> **Note:** You can connect to the EC2 instance using **EC2 Instance Connect**, **AWS Systems Manager Session Manager**, or a standard SSH client.
+>
+> - **EC2 Instance Connect:** Requires the appropriate IAM permissions for the connecting user, EC2 Instance Connect software on the instance, and SSH connectivity on port `22`.
+> - **Systems Manager Session Manager:** Requires the **SSM Agent** to be installed and running, appropriate IAM permissions for the instance (typically through an instance profile with `AmazonSSMManagedInstanceCore`, or Default Host Management Configuration), and IAM permissions for the connecting user to start a session. The instance also needs outbound HTTPS connectivity to Systems Manager endpoints. **No inbound SSH rule is required.**
+> - **Standard SSH:** Requires an SSH key pair, an SSH client, and inbound TCP port `22` access from your public IP address.
+>
+> For this lab, we will use a **standard SSH connection from our local machine**.
 
 **Why do we allow outbound traffic?**
 
@@ -1625,18 +1777,18 @@ Our GitHub Actions workflow needs to communicate with SonarQube to submit code a
 
 | Option | Network access | Considerations |
 |---|---|---|
-| **Self-hosted runner in your VPC** | Allow the runner's security group to access SonarQube on port `9000`. | Supports private connectivity, but you must manage and secure the runner. |
-| **GitHub-hosted larger runner with static IPs** | Allowlist the runner's static IP ranges. | Requires GitHub Enterprise Cloud and appropriate configuration. |
-| **Standard GitHub-hosted runner** | Allowlist the relevant GitHub Actions IP ranges. | Not recommended by GitHub due to the number of ranges and their changing nature. |
+| **Self-hosted runner in your VPC** | Allow inbound TCP traffic on SonarQube's port `9000` (default) in its security group, using the runner's security group as the source. | Supports private connectivity, provided appropriate VPC routing is configured. You must manage and secure the runner. |
+| **GitHub-hosted larger runner with static IP ranges** | Allowlist the runner's assigned static public IP ranges in the SonarQube security group or firewall. | Requires **GitHub Enterprise Cloud**, enabling static IP assignment, and a publicly reachable SonarQube endpoint. Static IP assignment is not supported for macOS larger runners. |
+| **Standard GitHub-hosted runner** | Allowlist the relevant GitHub Actions IP ranges in the SonarQube security group or firewall. | Not recommended by GitHub for internal resources because of the large number of IP ranges and their changing nature. |
 
 GitHub publishes its IP address ranges through its [Meta API](https://api.github.com/meta).
 
-- Look for the `actions` ranges when identifying IP addresses used by GitHub-hosted runners.
+- For **Linux and Windows GitHub-hosted runners**, look for the `actions` ranges. For **macOS runners**, use the `actions_macos` ranges.
 - These ranges are updated **weekly** and may change, requiring ongoing allowlist maintenance.
-- Standard GitHub-hosted runners need a **publicly reachable SonarQube endpoint** unless private networking is configured through another mechanism.
-- **Network access and authentication are separate controls.** The security group controls connectivity, while the SonarQube token authenticates the analysis request.
+- Standard GitHub-hosted runners need a **publicly reachable SonarQube endpoint**, unless private connectivity is configured through another mechanism.
+- **Network access and authentication are separate controls.** The security group or firewall controls network connectivity, while the SonarQube token authenticates the analysis request.
 
-> **Production Insight:** Prefer **private connectivity through a self-hosted runner** or another appropriately configured private-networking solution. If using GitHub-hosted larger runners with static IPs, allowlist their assigned IP ranges. Avoid relying on the large, changing IP ranges of standard GitHub-hosted runners for access control.
+> **Production Insight:** Prefer **private connectivity through a self-hosted runner** or another appropriately configured private-networking solution. If using GitHub-hosted larger runners, static IP ranges provide a more manageable allowlisting option. Avoid relying on the large, changing IP ranges of standard GitHub-hosted runners for access control.
 
 ---
 
@@ -1818,7 +1970,7 @@ Before installing Java, you can check which OpenJDK versions are available in yo
 
 ```bash
 # Refresh the local package index.
-sudo apt-get update
+sudo apt update
 
 # Search for available OpenJDK packages and versions.
 sudo apt search openjdk
@@ -1830,13 +1982,15 @@ Now, install Java 21:
 
 ```bash
 # Install the Java 21 runtime.
-sudo apt-get install -y openjdk-21-jre
+sudo apt install -y openjdk-21-jre
 
 # Verify the installed Java version.
 java --version
 ```
 
 Confirm that the output shows **Java 21** before proceeding.
+
+> **Note:** We are installing the **JRE (Java Runtime Environment)** because this EC2 instance only needs Java to **run the SonarQube server**. The JRE provides the runtime environment but does not include the Java compiler (`javac`). The **JDK (Java Development Kit)** includes the runtime along with the compiler and other development tools. If we were using this instance to **develop, compile, or build Java applications**, we would install the JDK instead.
 
 ---
 
@@ -1848,10 +2002,10 @@ Our PostgreSQL database is hosted on **Amazon RDS**, so we only need the **Postg
 
 ```bash
 # Refresh the package index before installing software.
-sudo apt-get update
+sudo apt update
 
 # Install the PostgreSQL client tools.
-sudo apt-get install -y postgresql-client
+sudo apt install -y postgresql-client
 
 # Verify that the PostgreSQL client is installed.
 psql --version
@@ -1925,10 +2079,10 @@ curl -L -o sonarqube.zip \
   'https://binaries.sonarsource.com/Distribution/sonarqube/sonarqube-26.11.0.134175.zip'
 
 # Refresh the package index before installing the archive extraction utility.
-sudo apt-get update
+sudo apt update
 
 # Install unzip so that we can extract the downloaded archive.
-sudo apt-get install -y unzip
+sudo apt install -y unzip
 
 # Extract SonarQube into /opt, a standard location for manually installed
 # third-party software that is not managed by the system package manager.
@@ -1959,8 +2113,8 @@ sudo useradd --system --gid sonar --shell /bin/false sonar
 # -R applies the ownership change recursively to the directory and all its contents.
 sudo chown -R sonar:sonar /opt/sonarqube-current
 
-# Ensure the SonarQube startup script is executable.
-sudo chmod +x /opt/sonarqube-current/bin/linux-x86-64/sonar.sh
+# Grant execute permission to the file owner (sonar) only.
+sudo chmod u+x /opt/sonarqube-current/bin/linux-x86-64/sonar.sh
 
 # Verify that the sonar service account exists.
 id sonar
@@ -2196,20 +2350,63 @@ This ensures that the frontend project is evaluated against its own Quality Gate
 
 **Overall Code vs. New Code**
 
-- **Overall Code:** Measures coverage across the entire codebase.
-- **New Code:** Measures coverage of recently added or modified code, based on the configured baseline or period.
+SonarQube allows us to apply Quality Gate conditions to either the **entire codebase** or only the **New Code**. Understanding the difference is particularly important when working with large, established applications.
+
+- **Overall Code:** Evaluates code quality and coverage across the **entire codebase**, including both existing and newly added or modified code.
+
+  - **Advantage:** Provides visibility and enforces quality standards across the entire application. It is particularly useful for new projects where there is no significant legacy code or accumulated technical debt.
+  - **Disadvantage:** In established applications, existing code may already have low test coverage or other quality issues. Enforcing strict conditions on the entire codebase can make it difficult to meet Quality Gate requirements without first addressing historical issues. This may delay the integration of otherwise good-quality changes.
+
+- **New Code:** Evaluates code quality and coverage only for **recently added or modified code**, based on the project's configured New Code Definition (for example, since the previous version, within a specified number of days, or compared with a reference branch).
+
+  - **Advantage:** Allows teams to maintain quality standards for new changes without requiring them to fix all existing issues before delivering new features. Teams can gradually improve the overall codebase as they modify existing code.
+  - **Disadvantage:** Existing code that has not been modified can continue to contain bugs, vulnerabilities, low coverage, or code smells without affecting Quality Gate conditions applied only to New Code. Teams must still monitor overall code quality and address accumulated technical debt over time.
+
+> **Production Insight:** For established enterprise applications, a common recommended approach is to follow **Clean as You Code**, focusing Quality Gate conditions on New Code. This prevents existing technical debt from blocking new development while ensuring that newly introduced or modified code meets defined quality standards. SonarSource's recommended **Sonar way Quality Gate** follows this approach by applying its primary quality conditions to New Code.
+
+---
 
 **Why use Overall Code for this project?**
 
-Our project is **built from scratch**, so we have no significant legacy codebase. Measuring overall coverage makes it easier to demonstrate how the threshold applies to the entire project. In established projects, enforcing coverage on **New Code** can help teams improve incrementally.
+Our application is **built from scratch**, so we do not have a significant legacy codebase or accumulated technical debt. Therefore, applying the coverage requirement to **Overall Code** is appropriate for this demonstration because we want to measure test coverage across the entire application.
+
+In an established enterprise application, we would generally consider applying the coverage requirement to **New Code** so that existing code does not prevent teams from delivering improvements. We could then gradually improve coverage across the remaining codebase.
+
+---
+
+**Does New Code make analysis faster?**
+
+An important distinction: choosing **New Code** does not automatically mean the scanner analyses only changed files. The New Code definition determines which code is considered new for issue reporting and Quality Gate evaluation. The scanner still analyses code according to the **configured analysis scope**.
+
+SonarQube provides separate **incremental analysis mechanisms** to reduce unnecessary analysis work:
+
+- **Skip unchanged files:** During supported Pull Request analyses, SonarQube can skip or optimize the analysis of files that have not changed.
+- **Analysis caching:** For supported languages and analysis types, SonarQube can reuse previously generated analysis results instead of repeating the same analysis from scratch.
+
+The availability and effectiveness of these optimizations depend on the **programming language, analyzer, and type of analysis** being performed.
+
+As DevOps engineers, we should aim to maintain effective quality controls while keeping CI/CD workflows efficient. We should use appropriate **incremental analysis optimizations** rather than weaken quality requirements simply to reduce execution time.
 
 **Why 80% Coverage?**
 
-- **80% is our demonstration target**, not a universal standard.
-- Coverage shows which code is exercised, but does not guarantee effective tests or defect-free code.
-- Our Quality Gate will **fail below 80% coverage**. Exactly 80% passes.
+- **80% is our demonstration target**, not a universal standard or a guarantee of code quality.
+- Coverage shows how much coverable code is exercised by tests, but it does not guarantee effective tests or defect-free code.
+- Our Quality Gate requires coverage to **meet or exceed 80%**. Coverage below this threshold fails the Quality Gate.
 
-> **Production Insight:** Quality Gates can evaluate multiple conditions, including **coverage, bugs, vulnerabilities, and code smells**. Choose thresholds based on your application's requirements and engineering standards.
+> **Production Insight:** Quality Gates can evaluate multiple conditions, including **coverage, bugs, vulnerabilities, security hotspots, and code duplication**. Choose thresholds based on your application's requirements and engineering standards.
+
+> **What Does SonarQube Analyze?**
+>
+> - **Bugs:** Issues in the code that can cause incorrect behaviour or runtime failures.
+> - **Vulnerabilities:** Security weaknesses in the code that could be exploited to compromise an application or its data.
+> - **Security Hotspots:** Security-sensitive code that requires manual review to determine whether it introduces a genuine security risk.
+> - **Code Smells:** Code patterns that make the application harder to understand, maintain, or modify.
+> - **Code Coverage:** Measures how much of the executable code is exercised by tests, using coverage reports generated by external tools such as JaCoCo and Vitest.
+> - **Code Duplication:** Identifies repeated blocks of code that could potentially be reused or refactored.
+> - **Code Complexity:** Measures cyclomatic and cognitive complexity to highlight code that may be difficult to understand, test, or maintain.
+> - **Technical Debt:** Estimates the effort required to fix maintainability issues and improve the codebase.
+> - **Code Metrics:** Tracks metrics such as lines of code, statements, functions, and duplicated lines to help assess the size and structure of the codebase.
+> - **Quality Gates:** Evaluates analysis results against configured quality criteria and determines whether a project passes or fails.
 
 ---
 
@@ -2233,7 +2430,7 @@ In your GitHub repository, navigate to **Settings → Secrets and variables → 
 | Type | Name | Value |
 |---|---|---|
 | **Secret** | `SONAR_TOKEN` | The token generated for the service user |
-| **Variable** | `SONAR_HOST_URL` | `http://<sonarqube-ec2-public-ip>:9000` |
+| **Variable** | `SONAR_HOST_URL` | `http://<sonarqube-ec2-public-dns>:9000` |
 
 The GitHub Actions workflow will use these values to connect to SonarQube and submit analysis results.
 
@@ -2254,38 +2451,63 @@ Because our backend and frontend use different technology stacks, we will use di
 
 ---
 
-#### Maven vs. Node.js
+#### Java Backend vs. React Frontend
 
-The following table summarizes how the two application stacks handle testing, coverage, and SonarQube analysis.
+The following table summarizes how our two application stacks handle dependency management, building, testing, code coverage, and SonarQube analysis.
 
 | Concept | Java Backend | React Frontend |
 |---|---|---|
 | **Dependency management** | Maven | npm |
-| **Dependency definition** | `pom.xml` | `package.json` |
-| **Dependency lockfile** | Maven dependency resolution | `package-lock.json` |
-| **Run tests** | `mvn clean verify` | `npm test` |
-| **Generate coverage** | JaCoCo | Vitest with V8 coverage |
+| **Dependency configuration** | `pom.xml` | `package.json` |
+| **Dependency lockfile** | No separate lockfile used in this project | `package-lock.json` |
+| **Build and test commands** | `mvn --batch-mode clean verify` | `npm run build` and `npm run test:coverage` |
+| **Test framework** | JUnit 5 and Mockito (executed by Maven Surefire) | Vitest |
+| **Coverage tool** | JaCoCo | Vitest with V8 coverage |
 | **Coverage report** | `target/site/jacoco/jacoco.xml` | `coverage/lcov.info` |
-| **SonarQube analysis** | SonarQube Maven plugin | SonarQube Scan Action |
+| **SonarQube scanner integration** | SonarScanner for Maven (`sonar-maven-plugin`) | SonarQube Scan Action |
 
-The key takeaway is that **each application uses its native testing tools to generate coverage data, while SonarQube provides the common analysis platform**.
+The key takeaway is that **each application uses its own build, testing, and coverage tools, while SonarQube provides a common platform for code quality analysis**. SonarQube consumes the coverage reports generated by JaCoCo and Vitest; it does not execute the tests or generate coverage itself.
+
+> **Learning Note – Test Cases and Code Coverage:** Testing frameworks execute test cases written by developers or testing teams, while coverage tools measure how much application code those tests execute. **Without test cases, meaningful code coverage cannot be generated.**
+>
+> **DevOps Perspective:** DevOps engineers are not typically responsible for writing test cases, but should understand how tests run in CI, how coverage is generated, and how SonarQube consumes the reports.
 
 ---
 
 #### How the Quality Gate Controls GitHub Actions
 
-Once SonarQube analysis is configured, the workflow proceeds as follows:
+Once SonarQube analysis is configured, our workflow proceeds as follows:
 
-1. **Backend and Frontend jobs:** Execute automated tests and generate their respective code coverage reports using JaCoCo and Vitest.
-2. **SonarQube analysis:** The scanners perform code analysis in the GitHub Actions runner environment. For the backend, we invoke the **SonarScanner for Maven** through `sonar-maven-plugin`. For the frontend, we use the **SonarQube Scan Action**, which sets up and invokes the SonarScanner CLI. Both scanners use the relevant language analyzers to inspect the source code and import the previously generated coverage reports.
-3. **Upload analysis reports:** Once analysis is complete, the scanners upload their analysis reports to the **SonarQube Server**. The GitHub Action is responsible for invoking the scanner; it is not the analysis engine itself.
-4. **Quality Gate evaluation:** The SonarQube Server processes the uploaded reports, stores the analysis results and metrics in our **Amazon RDS for PostgreSQL** database, and evaluates them against the project's configured Quality Gate.
-5. **Wait for the result:** The `-Dsonar.qualitygate.wait=true` property makes the scanner wait for the Quality Gate evaluation to complete by polling the SonarQube Server. The server retrieves the evaluation result and returns it to the scanner.
-6. **Fail the workflow:** If the Quality Gate fails, the scanner exits with a non-zero status. This causes the corresponding GitHub Actions step and job to fail, resulting in a failed workflow.
+In our setup, the **SonarQube Server runs on an EC2 instance**, while the **SonarQube Scanner components run on GitHub Actions runners**. The scanners perform code analysis on the runners and submit the results to the server. We do not need to manually install a separate scanner on the runner images because each integration obtains and invokes the required scanner differently.
 
-> **Note:** The coverage reports are generated in the earlier Backend and Frontend jobs. Since SonarQube analysis runs in a separate job, these reports must be made available to that job. We will explain how this is achieved as part of our workflow implementation.
+1. **Execute Tests and Generate Coverage Reports:**
+   - **Backend:** Maven executes our JUnit tests, while **JaCoCo** collects coverage data and generates the XML report at `target/site/jacoco/jacoco.xml`.
+   - **Frontend:** **Vitest** executes our tests using the V8 coverage provider and generates the LCOV report at `coverage/lcov.info`.
 
-> **Production Insight:** This makes code quality an actual **CI/CD control**. The workflow can stop when defined quality standards are not met, rather than merely reporting the results.
+   These coverage reports are generated during the build and test process in Stage 6. **JaCoCo and Vitest generate the reports; SonarQube does not generate coverage reports itself.**
+
+2. **Analyze Code with SonarScanner:**
+
+   The **SonarQube Scanner** orchestrates code analysis, imports the previously generated coverage reports, and prepares the analysis results for submission to the SonarQube Server.
+
+   We demonstrate two different scanner integrations:
+
+   - **Backend:** We use the **SonarScanner for Maven** through the `sonar-maven-plugin`. This is SonarSource's **recommended default scanner for Maven projects**. When Maven executes the `sonar` goal, it resolves the plugin and its dependencies from Maven repositories and runs the analysis. The plugin provides the scanner integration, so we do not need to separately download, install, or maintain the SonarScanner CLI.
+   - **Frontend:** We use the official **SonarQube Scan Action** (`SonarSource/sonarqube-scan-action@v8.3.0`). The action obtains and sets up the **SonarScanner CLI** on the GitHub Actions runner and invokes it to perform the analysis.
+
+   Both scanners run on the **GitHub Actions runner**. They use the relevant language analyzers to inspect the source code and import the existing coverage reports. **The scanners do not execute our tests or generate coverage reports.**
+
+3. **Submit Analysis Reports:** Once analysis is complete, each scanner generates and uploads an **analysis report** to the SonarQube Server. The report contains the analysis results, including **code quality metrics, identified issues, and imported coverage information**.
+
+4. **Process Analysis and Evaluate Quality Gates:** The SonarQube Server's **Compute Engine** processes the uploaded reports and saves the analysis results in the SonarQube database. In our setup, this database is **Amazon RDS for PostgreSQL**. The server then evaluates the results against the respective project's configured **Quality Gate**.
+
+5. **Wait for the Quality Gate Result:** The `-Dsonar.qualitygate.wait=true` property makes the scanner **poll the SonarQube Server and wait for the Quality Gate evaluation to complete**. The scanner then receives the evaluation status.
+
+6. **Pass or Fail the Workflow:** If the Quality Gate passes, the analysis step completes successfully. If it fails, the scanner exits with a **non-zero status**, causing the corresponding GitHub Actions step and job to fail.
+
+> **Implementation Note:** We intentionally demonstrate **two different scanner integrations**: the SonarScanner for Maven for our Java backend, following SonarSource's recommended approach, and the official SonarQube Scan Action for our React frontend. Both perform analysis on the GitHub Actions runner and submit their results to the same SonarQube Server.
+
+> **Production Insight:** This makes code quality an actual **CI/CD control**. The workflow can stop when defined quality standards are not met, rather than merely submitting analysis results for someone to review later.
 
 ---
 
@@ -2316,27 +2538,6 @@ Add a **new step** to the backend job, immediately after the existing step named
 
 ---
 
-#### Understanding SonarQube Analysis in GitHub Actions
-
-A **SonarQube Scanner** is responsible for orchestrating code analysis, importing available test coverage reports, and submitting the analysis results to the **SonarQube Server** for processing and **Quality Gate evaluation**.
-
-In our setup, the **SonarQube Server runs on an EC2 instance**, while the scanner components run on **GitHub Actions runners**. We do not need to manually install SonarQube scanners on the runner images because each integration obtains and executes the required scanner differently.
-
-- **Backend:** We use the **SonarScanner for Maven** through the `sonar-maven-plugin`, which is **SonarSource's recommended approach for Maven projects**. When Maven executes the `sonar` goal, it resolves the plugin and its dependencies from Maven repositories and runs the analysis. The plugin provides the scanner integration, so we do not need a separate SonarScanner CLI installation.
-- **Frontend:** We use the official **SonarQube Scan Action** (`SonarSource/sonarqube-scan-action@v7`). The action obtains and sets up the **SonarScanner CLI** on the GitHub Actions runner and invokes it to perform the analysis.
-- **Coverage reports:** These were generated in **Stage 6** using **JaCoCo (backend)** and **Vitest (frontend)**. The scanners import these existing reports during analysis rather than generating coverage themselves.
-
-The key distinction is how the scanner is made available and invoked:
-
-- **Backend:** Maven resolves and invokes the SonarScanner for Maven plugin, which executes the analysis.
-- **Frontend:** The SonarQube Scan Action sets up and invokes the SonarScanner CLI.
-
-Both approaches perform analysis on the **GitHub Actions runner** and upload their results to our **SonarQube Server**.
-
-> **Implementation Note:** We intentionally demonstrate **two different scanner integrations**, following SonarSource's recommended approach for Maven projects while using its official GitHub Action for the React frontend.
-
----
-
 ```yaml
 env:
   SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -2352,7 +2553,18 @@ The scanner needs to know **where SonarQube is running** and **how to authentica
 
 This allows the scanner to connect to SonarQube **without hardcoding credentials or connection details** into the workflow.
 
-> **Note:** GitHub Actions maps the values from Secrets and Variables to environment variables through the `env` block. The SonarScanner for Maven automatically recognizes the standard environment variable names `SONAR_TOKEN` and `SONAR_HOST_URL`. Therefore, we don't need to explicitly pass them as Maven command-line arguments. **These environment variable names must match SonarSource's expected names** for automatic recognition.
+> **Note:** GitHub Actions maps the values from Secrets and Variables to environment variables through the `env` block. The SonarScanner automatically recognises the standard environment variable names **`SONAR_TOKEN`** and **`SONAR_HOST_URL`**. Therefore, we do not need to explicitly pass them as Maven command-line arguments.
+>
+> **Important:** The environment variable names on the **left side of the `env` block`** must match SonarSource's expected names for automatic recognition. However, the GitHub Secret and Variable names on the **right side** can be different, as long as we map them correctly.
+>
+> For example, we can use `secrets.MY_SONAR_AUTH_TOKEN` and `vars.MY_SONAR_SERVER_URL` while keeping the environment variable names as `SONAR_TOKEN` and `SONAR_HOST_URL`.
+>
+> If we use different environment variable names instead, the scanner will not automatically recognise them. We would need to explicitly provide the corresponding analysis parameters:
+>
+> - **`-Dsonar.token`** for the authentication token.
+> - **`-Dsonar.host.url`** for the SonarQube server URL.
+>
+> **Recommendation:** Keep the standard environment variable names and map your GitHub Secrets and Variables to them. Also, avoid passing authentication tokens directly as command-line parameters because they may be exposed in process information or logs.
 
 ---
 
@@ -2758,7 +2970,7 @@ A **Dockerfile** is a text file containing a set of instructions that Docker use
 >
 > These practices help organizations build **smaller, more secure, predictable, and maintainable container images**. The right combination depends on the application's requirements and the organization's security and operational standards.
 >
-> **For this project:** We use official Nginx and Eclipse Temurin runtime images and deliberately keep development and build dependencies outside our production containers. Our application artifacts are built, tested, and validated earlier in the GitHub Actions workflow before being packaged into their respective runtime images.
+> **For this project:** We use official **Nginx (Frontened)** and **Eclipse Temurin (Backend)** runtime images and deliberately keep development and build dependencies outside our production containers. Our application artifacts are built, tested, and validated earlier in the GitHub Actions workflow before being packaged into their respective runtime images.
 
 **Our Backend Dockerfile:**
 
@@ -2861,11 +3073,14 @@ Next, we create the application user:
 - **`--gid 10001`** associates the user with the group whose GID is `10001`.
 - **`--no-create-home`** prevents the creation of a home directory for this user.
 - **`--shell /usr/sbin/nologin`** assigns a shell that prevents the user from obtaining a normal interactive login session.
+  > **Note:** This prevents normal interactive login sessions, such as SSH logins. However, it does not prevent command execution through `kubectl exec`, which can directly start another shell or process inside the container.
 - **`appuser`** is the name of the user being created.
 
 Running the application under a **dedicated non-root user** follows the **principle of least privilege**: the application receives only the permissions it needs rather than the elevated privileges available to root.
 
 > **Production Insight:** Running application containers as non-root users is an important security practice. If an application is compromised, the attacker does not automatically receive the elevated privileges available to the root user.
+
+> **Note:** Linux can automatically create a **primary group with the same name as the user**, depending on the system configuration and `useradd` defaults. However, we explicitly create the `appuser` group using `groupadd` to ensure that it exists with the **specific GID `10001`**. We then use `useradd --gid 10001` to assign this existing group as the user's primary group. This avoids relying on distribution-specific defaults and ensures consistent user and group IDs across environments.
 
 ---
 
@@ -2895,9 +3110,9 @@ The **`COPY`** instruction copies files from the build context into the containe
 - **`user-management-api.jar`** is the source JAR generated during our earlier backend build and downloaded from the GitHub Actions artifact.
 - **`app.jar`** is the destination filename inside the container. Since we previously configured `/app` as our working directory, the JAR is copied to `/app/app.jar`.
 
-We use numeric IDs instead of usernames because Docker can assign ownership directly using UID and GID without resolving user and group names inside the image. Using `--chown` also avoids requiring a separate `RUN chown` instruction after copying the file.
+We use **numeric IDs (UID and GID)** instead of usernames because Docker can assign ownership directly without resolving user and group names inside the image. Alternatively, we can use `--chown=appuser:appuser`, provided the user and group already exist in the image.
 
-> **Important:** We assign ownership while copying the JAR instead of executing a separate `RUN chown` command. This avoids an additional ownership-changing instruction and ensures the application user owns the JAR from the moment it is added to the image.
+> **Important:** We assign ownership while copying the JAR using `--chown` instead of executing a separate `RUN chown` command afterward. This avoids an additional ownership-changing instruction and ensures the **application user owns the JAR as soon as it is added to the image**.
 
 ---
 
@@ -2948,21 +3163,23 @@ Let's understand the command:
 
 **Why are we using `ENTRYPOINT` instead of `CMD`?**
 
-We could have used `CMD ["java", "-jar", "app.jar"]` to start our application. However, there is an important difference between the two instructions:
+- **`CMD`** specifies the default command to run when a container starts. This command can be replaced at runtime.
+- **`ENTRYPOINT`** defines the main executable the container is designed to run. Arguments supplied at runtime are passed to this executable instead of replacing it.
 
-- **`CMD`** specifies the default command to execute when a container starts. This default command can be completely replaced by providing another command when running the container.
-- **`ENTRYPOINT`** establishes the primary executable that the container is designed to run. Arguments supplied when starting the container are appended to the executable defined by an exec-form `ENTRYPOINT`.
+Since our image is designed to run the **Spring Boot backend**, we use `ENTRYPOINT` to make Java the main executable. To run a completely different command, we must explicitly override it using Docker's `--entrypoint` option.
 
-In our case, this image is specifically designed to run the **Spring Boot backend application**. We therefore use `ENTRYPOINT` to establish Java as the primary executable rather than treating the application startup command as a replaceable default.
+---
 
-This also allows us to pass additional arguments to the Java application at runtime without replacing the executable. To run an entirely different executable, we would need to explicitly override the entrypoint using Docker's `--entrypoint` option.
+**Why use the exec form of `ENTRYPOINT`?**
 
-We also use the **exec form** of `ENTRYPOINT`, represented by JSON-array syntax, rather than the shell form. This starts Java directly as the container's main process (**PID 1**) instead of launching it through an intermediate shell. It allows termination signals, such as `SIGTERM`, to reach the Java process directly, giving the application an opportunity to perform its shutdown handling.
+Docker supports two forms for both `CMD` and `ENTRYPOINT`:
 
-> **Important:** `ENTRYPOINT` establishes the default executable for the container. Since our image is designed to run the Spring Boot application, supplying an unrelated command at runtime will not automatically replace Java. You must explicitly override the entrypoint using `--entrypoint` when you intend to run a different executable.
+- **Exec form:** `ENTRYPOINT ["java", "-jar", "app.jar"]` (JSON-array syntax).
+- **Shell form:** `ENTRYPOINT java -jar app.jar` (runs the command through a shell).
 
-> **Production Insight:** The exec form of `ENTRYPOINT` is preferred for application containers because it avoids an intermediate shell and allows the application process to receive termination signals directly. This supports proper container lifecycle management and application shutdown handling.
+In our Dockerfile, we use the **exec form of `ENTRYPOINT`** to start Java directly as the container's **main process (PID 1)**, without an intermediate shell. This allows Java to receive termination signals such as `SIGTERM` directly and handle application shutdown properly.
 
+> **Production Insight:** The exec form is generally preferred for application containers because it supports proper **signal handling and graceful shutdown**.
 ---
 
 When Docker builds this image, it starts with a Java 21 runtime image, adds application metadata, creates a dedicated non-root user, establishes `/app` as the working directory, and copies our previously built JAR into that directory with the appropriate ownership.
@@ -3072,10 +3289,8 @@ backend-image-build-scan-job:
       id: image-tag
       env:
         APP_VERSION: ${{ steps.app-version.outputs.version }}
-        GITHUB_SHA: ${{ github.sha }}
       run: |
-        SHORT_SHA="${GITHUB_SHA::7}"
-        IMAGE_TAG="${APP_VERSION}-${SHORT_SHA}"
+        IMAGE_TAG="${APP_VERSION}-${GITHUB_SHA::7}"
 
         echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
@@ -3124,7 +3339,7 @@ backend-image-build-scan-job:
 
 ---
 
-The next step downloads the JAR produced by `backend-job`:
+After the checkout step, the next step downloads the JAR produced by `backend-job`:
 
 ```yaml
 - name: Download backend JAR
@@ -3138,13 +3353,15 @@ The next step downloads the JAR produced by `backend-job`:
 - **`name: backend-jar`** must match the artifact name used by `actions/upload-artifact` in Task 1.
 - **`path`** specifies where the artifact is downloaded. We place the JAR directly inside the backend directory because our Dockerfile expects it there.
 
-The artifact handoff is:
+**Artifact handoff:**
 
 ```text
 backend-job → Upload backend-jar → Download backend-jar → Container Build
 ```
 
-> **Important Point:** The second job runs on a **fresh runner**, so the JAR from `backend-job` is not already present. The artifact transfers the exact JAR produced and validated by the previous job.
+> **Important:** The second job runs on a **fresh runner**, so the JAR produced by `backend-job` is not already available in its workspace. The artifact transfers the exact JAR produced and validated by the previous job.
+>
+> **Failure behaviour:** If the requested artifact (`backend-jar`) does not exist in the current workflow run, `actions/download-artifact@v8` **automatically fails with an error**. Unlike the upload action, it does not require an additional `if-no-files-found` setting.
 
 ---
 
@@ -3156,8 +3373,8 @@ Before building the image, we verify that the expected JAR is available:
   run: ls -lh user-management-api.jar
 ```
 
-- **`working-directory`:** Changes the working directory to the backend directory before executing the command.
-- **`ls -lh`:** Displays the JAR's file details, including its size in a human-readable format. If the file does not exist, `ls` returns a non-zero exit status, causing the step and job to fail.
+- **`working-directory`** changes the working directory to the backend directory before executing the command.
+- **`ls -lh`** displays the JAR's file details, including its size in a human-readable format. If the file does not exist at the specified location, `ls` returns a **non-zero exit status**, causing the step and job to fail.
 
 > **Production Insight:** Verifying the artifact immediately after downloading makes failures easier to diagnose. We can identify an artifact handoff problem before attempting to build the container image.
 
@@ -3227,21 +3444,35 @@ Next, we need a **container image tag** that identifies both the application ver
   id: image-tag
   env:
     APP_VERSION: ${{ steps.app-version.outputs.version }}
-    GITHUB_SHA: ${{ github.sha }}
   run: |
-    SHORT_SHA="${GITHUB_SHA::7}"
-    IMAGE_TAG="${APP_VERSION}-${SHORT_SHA}"
+    IMAGE_TAG="${APP_VERSION}-${GITHUB_SHA::7}"
 
     echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 ```
 
-The `Generate image tag` step receives two values through environment variables:
+The `Generate image tag` step uses the following values:
 
-- **`APP_VERSION`** receives the Step Output created by the `Read application version` step.
-- **`GITHUB_SHA`** contains the full commit SHA associated with the workflow run.
-- **`${GITHUB_SHA::7}`** extracts the first seven characters of the commit SHA and stores them in `SHORT_SHA`.
-- **`IMAGE_TAG`** combines the application version and short commit SHA.
-- **`$GITHUB_OUTPUT`** publishes the generated tag as a Step Output named `image_tag`.
+- **`APP_VERSION`** receives the **Step Output** created by the `Read application version` step. We map it through `env` so that the shell script can access it as `$APP_VERSION`.
+
+  > **Note:** We could reference `${{ steps.app-version.outputs.version }}` directly inside the `run` script. However, GitHub evaluates expressions **before passing the script to the runner**. Directly inserting an expression into the script can create a **script injection risk** if its value contains malicious shell syntax. Passing the value through an environment variable keeps it separate from the shell code. This follows GitHub's recommended security practice.
+
+- **`GITHUB_SHA`** is a **default environment variable provided automatically by GitHub Actions**. It contains the full commit SHA associated with the workflow run and is available to every step on the runner. Therefore, we do not need to declare it in the `env` block; the shell script can access it directly.
+
+- **`${GITHUB_SHA::7}`** uses **Bash substring expansion** to extract the first seven characters of the commit SHA. We can use `GITHUB_SHA` directly because GitHub Actions automatically makes **default environment variables** available to the runner. We do not need to declare them separately in the `env` block.
+
+  For example, we can directly use the following variables inside a shell script:
+  - **`$GITHUB_SHA`** – Full commit SHA associated with the workflow run.
+  - **`$GITHUB_REPOSITORY`** – Repository name in `owner/repository` format.
+  - **`$GITHUB_REF_NAME`** – Branch or tag name associated with the workflow run.
+  - **`$GITHUB_WORKSPACE`** – Path to the checked-out repository on the runner.
+
+  > **Note:** Some default environment variables are available only for specific event types. Always check their documented availability before using them.
+
+  > **Reference:** [GitHub Actions – Default Environment Variables](https://docs.github.com/en/actions/reference/workflows-and-actions/variables#default-environment-variables)
+
+- **`IMAGE_TAG`** combines the application version and the short commit SHA to generate the container image tag.
+
+- **`$GITHUB_OUTPUT`** is a special file provided by GitHub Actions. Writing `image_tag=$IMAGE_TAG` to this file publishes a **Step Output** named `image_tag`.
 
 For example, if the application version is `0.0.1-SNAPSHOT` and the short commit SHA is `a1b2c3d`, the resulting image tag is:
 
@@ -3249,9 +3480,9 @@ For example, if the application version is `0.0.1-SNAPSHOT` and the short commit
 0.0.1-SNAPSHOT-a1b2c3d
 ```
 
-The tag is then available through **`${{ steps.image-tag.outputs.image_tag }}`**.
+Since the step has **`id: image-tag`**, subsequent steps in the same job can access the generated tag using **`${{ steps.image-tag.outputs.image_tag }}`**.
 
-> **Production Insight:** We avoid a generic tag such as `latest`. A version-and-commit-based tag helps associate the **container image, application version, and source code revision**, which is useful when tracing releases or investigating issues.
+> **Production Insight:** We avoid generic tags such as `latest`. A version-and-commit-based tag helps associate the **container image with its application version and source code revision**, making it easier to trace releases, identify deployed code, and investigate issues.
 
 ---
 
@@ -3294,6 +3525,7 @@ The flow so far is:
 ```text
 Download JAR → Verify JAR → Set Up Java → Read Version → Generate Image Tag → Build Image → Verify Image
 ```
+---
 
 Finally, we scan the container image for security vulnerabilities:
 
@@ -3301,11 +3533,13 @@ Finally, we scan the container image for security vulnerabilities:
 - name: Scan backend container image with Trivy
   uses: aquasecurity/trivy-action@v0.36.0
   with:
+    scan-type: image
     image-ref: cwvj-mega-backend:${{ steps.image-tag.outputs.image_tag }}
     severity: HIGH,CRITICAL
     exit-code: '1'
 ```
 
+- **`scan-type`**: image tells Trivy to perform a container image scan.
 - **`image-ref`** tells Trivy exactly which local container image to scan.
 - **`severity: HIGH,CRITICAL`** limits the scan to vulnerabilities classified as High or Critical.
 - **`exit-code: '1'`** tells Trivy to return a failure exit code when matching vulnerabilities are found.
@@ -3394,42 +3628,73 @@ The `COPY` instruction places the existing JAR inside the image and sets its fil
 
 In Task 4, we will update the affected Jackson and Tomcat dependency versions and rerun the workflow to verify that the image passes the security gate.
 
+> **Important:** The vulnerability count shown in the scan results is **not fixed** and may vary between workflow executions. Trivy uses an updated vulnerability database to identify known security issues. As new vulnerabilities are disclosed and existing vulnerability records are updated, the same dependency version may produce additional findings in a later scan. Changes to dependency or base image versions can also affect the results.
+>
+> For example, when I initially implemented this stage, Trivy reported **8 vulnerabilities**. However, when I ran the scan again on **20 November 2026**, it reported **9 vulnerabilities**. Therefore, the numbers shown in this demonstration are illustrative. Your scan may report a different number of vulnerabilities depending on when you execute it and the versions of the dependencies being scanned.
+
 ---
 
-#### Why Did Our Earlier Trivy Filesystem Scan Report Zero Vulnerabilities?
+#### Why Do the Repository and Image Scan Results Differ?
 
-Our initial Trivy filesystem scan reported zero vulnerabilities for `backend/pom.xml`, but the subsequent JAR and container image scans detected **8 HIGH and CRITICAL vulnerabilities** in `app/app.jar`.
+Our initial Trivy **repository scan (`scan-type: repo`)** reported zero vulnerabilities in the identified Maven dependencies. However, the subsequent **container image scan** detected **8 HIGH and CRITICAL vulnerabilities** in `app/app.jar`.
 
 **Why can the results differ?**
 
-Trivy supports scanning both Maven `pom.xml` files and Java JAR files, but it analyzes them differently:
+Trivy analyses different targets depending on the scan type:
 
-- **Filesystem scan:** Parses `pom.xml` and attempts to resolve the dependency graph using local files and Maven repositories.
-- **JAR scan:** Examines the packaged Java artifact using Trivy's Java vulnerability database.
-- **Container image scan:** Examines the application packaged inside the image, along with its operating system packages.
+| Scan Type | What Trivy Analyses |
+|---|---|
+| **Repository (`repo`)** | Supported dependency files, such as Maven `pom.xml`. It does not inspect compiled JARs or container OS packages. |
+| **Container Image (`image`)** | Files inside the image, including OS packages and packaged application dependencies. |
 
-Trivy's Maven dependency analysis has documented limitations. For example, it does not analyze every Maven scope or optional dependency, and it may not discover child dependencies when it cannot determine a dependency's version.
+Our container image scan reported:
 
-Refer to the [official Trivy Java scanning documentation](https://trivy.dev/docs/latest/guide/coverage/language/java/) for the supported dependency scopes and other limitations.
+| Target | Type | Vulnerabilities |
+|---|---|---:|
+| Ubuntu 24.04 | Operating system | 0 |
+| `app/app.jar` | Java application | 8 |
 
-> **Important:** These limitations are possible reasons for differences between scan results, but our current logs do not establish which specific limitation caused the discrepancy in this run. We should not assume a cause without evidence.
+> **Important:** Vulnerability counts are not fixed. Trivy uses an updated vulnerability database, so new disclosures and database updates can change scan results even when dependency versions remain unchanged. Changes to application dependencies or the base image can also affect the results.
+>
+> For example, our initial scan reported **8 vulnerabilities**, while a rerun on **20 November 2026** reported **9**. Treat these numbers as examples; your results may differ depending on when you run the scan and which versions are present.
 
-> **Challenge:** Review the **official Trivy documentation** and investigate why our filesystem scan reported **zero vulnerabilities** while the JAR scan identified **eight**. Pay particular attention to **Maven dependency resolution** and the differences between scanning a `pom.xml` and a packaged JAR.
+**Maven Dependency Analysis: Important Limitations**
 
-> Also, remember that our `pom.xml` defines a **parent POM**. Not all dependencies and their versions are explicitly declared in our child POM. Some versions are inherited or managed through the parent POM's dependency management, while transitive dependencies are introduced by other dependencies. Therefore, **examining only our child POM may not reveal the complete, resolved dependency tree**. Investigate how Maven resolves these dependencies and how Trivy uses that information during its filesystem scan.
+Trivy analyses Maven dependencies differently depending on whether it scans `pom.xml` or a packaged JAR.
+
+- **Dependency resolution:** When scanning `pom.xml`, Trivy looks for dependency information in the project directory, the parent POM's `relativePath`, the local Maven repository, and remote Maven repositories.
+- **Supported scopes:** Trivy analyses `import`, `compile`, `runtime`, and empty Maven scopes. It skips other scopes and optional dependencies.
+- **Unresolved dependencies:** If the parent POM cannot be reached or Trivy cannot determine a dependency's version, it records an empty version and cannot discover that dependency's transitive dependencies.
+- **Development dependencies:** Maven POM analysis excludes development dependencies by default, whereas JAR analysis includes dependencies packaged in the JAR.
+- **JAR detection:** Trivy reads `pom.properties` and `MANIFEST.MF` to identify Java packages. If these files are missing or incomplete, it can use the **Trivy Java DB** as a fallback. This fallback mechanism is experimental.
+
+Reference: [Trivy – Java Scanning](https://trivy.dev/docs/latest/coverage/language/java/)
+
+**Applying This to Our Project**
+
+Our `pom.xml` references a **parent POM**, so not all dependency versions are explicitly declared in the child POM. Some versions are inherited or managed through the parent's dependency management, while other dependencies are introduced transitively.
+
+Therefore, **looking only at the child POM does not reveal the complete resolved dependency tree**.
+
+> **Challenge:** Investigate why the repository scan reported **zero vulnerabilities** while the image scan detected **8 vulnerabilities in `app/app.jar`**. Compare Maven's resolved dependency tree with the dependencies Trivy identifies during each scan. Pay particular attention to parent POM accessibility, dependency versions, scopes, and transitive dependencies.
+>
+> **Important:** These are possible reasons for the difference, not confirmed causes. Our current scan results alone do not establish exactly why the findings differ.
 
 ---
 
-#### Optional: Reproduce the JAR Scan Findings
+#### Optional: Scan the JAR Before Container Image Build
 
-You can reproduce the findings by scanning the built JAR directly.
+You can also scan the packaged JAR immediately after Maven generates it, allowing you to identify vulnerabilities **before building the container image**.
 
-Add the following diagnostic step immediately after the Maven build:
+The repository scan (`scan-type: repo`) analyses supported dependency files but does not scan compiled JAR files. Trivy also does not perform JAR vulnerability scanning in `fs` mode. For this diagnostic exercise, we use **`rootfs` mode** to scan the generated JAR.
+
+Add the following step immediately after the Maven build:
 
 ```yaml
 - name: Run Trivy backend JAR scan
   uses: aquasecurity/trivy-action@v0.36.0
   with:
+    version: v0.76.2
     scan-type: rootfs
     scan-ref: cwvj-3tier-mega-project/backend/target
     scanners: vuln
@@ -3437,9 +3702,11 @@ Add the following diagnostic step immediately after the Maven build:
     exit-code: '1'
 ```
 
-This scans the Maven `target` directory after the JAR has been generated. With the vulnerable dependency versions restored, Trivy should reproduce the **8 HIGH and CRITICAL findings**.
+This scans the Maven `target` directory, where the packaged JAR is generated. With the vulnerable dependency versions restored, Trivy should identify the vulnerabilities contained in the JAR. In our earlier run, it reported **8 HIGH and CRITICAL vulnerabilities**.
 
-> **Note:** Because `exit-code: '1'` is configured, detecting matching vulnerabilities will fail the backend job and prevent downstream jobs that depend on its successful completion from running. Remove this diagnostic step after reproducing the result.
+> **Note:** The exact **vulnerability count may change** as Trivy's vulnerability database is updated. Refer to the earlier note on changing vulnerability counts.
+>
+> **Important:** Because `exit-code: '1'` is configured, detecting matching vulnerabilities will **fail the Trivy step** and consequently the **backend job**. Downstream jobs that depend on the backend job completing successfully will be **skipped**. **Remove this diagnostic step** after reproducing the findings.
 
 ---
 
@@ -3573,7 +3840,7 @@ Unlike our backend Dockerfile, which uses a Java runtime to execute a Spring Boo
 # Use the official Nginx image based on Alpine 3.24 (slim variant).
 FROM nginx:1.31.6-alpine3.24-slim
 
-# Upgrade installed Alpine packages to their latest available versions.
+# Upgrade installed packages to the latest versions available from the configured Alpine repositories.
 RUN apk upgrade --no-cache
 
 # Remove the default Nginx server configuration.
@@ -3582,10 +3849,10 @@ RUN rm /etc/nginx/conf.d/default.conf
 # Copy our application-specific Nginx configuration into the image.
 COPY nginx.conf /etc/nginx/nginx.conf
 
-# Copy the validated Vite production build into Nginx's static content directory.
+# Copy the Vite production build output into Nginx's document root.
 COPY dist /usr/share/nginx/html
 
-# Assign the required ownership to the Nginx cache directory and PID file.
+# Prepare writable cache and PID-file locations for the non-root Nginx process.
 RUN chown -R nginx:nginx /var/cache/nginx \
     && touch /tmp/nginx.pid \
     && chown nginx:nginx /tmp/nginx.pid
@@ -3593,10 +3860,10 @@ RUN chown -R nginx:nginx /var/cache/nginx \
 # Run Nginx as a non-root user.
 USER nginx
 
-# Document the port on which Nginx listens inside the container.
+# Declare the container port used by our Nginx configuration.
 EXPOSE 8080
 
-# Start Nginx in the foreground when the container launches.
+# Set the default command for the inherited Nginx entrypoint.
 CMD ["nginx", "-g", "daemon off;"]
 ```
 
@@ -3630,13 +3897,27 @@ RUN apk upgrade --no-cache
 
 The **`RUN`** instruction executes commands during image construction. We use it here to upgrade the installed Alpine packages.
 
-- **`apk`** is Alpine Linux's package management utility, used to install, remove, and upgrade packages.
-- **`upgrade`** upgrades installed packages to the latest eligible versions available from the configured package repositories.
-- **`--no-cache`** prevents APK from retaining a local package index cache.
+- **`apk`:** Alpine Package Keeper, **Alpine Linux's native package management utility**, used to install, remove, and upgrade packages.
+  > **Why `apk` instead of `apt`?** Our base image, `nginx:1.31.6-alpine3.24-slim`, is based on **Alpine Linux 3.24**. Alpine uses `apk` as its package manager, whereas **`apt` is used by Debian and Ubuntu-based distributions**. Therefore, we use `apk` because it is the package manager supported by our chosen base image.
+- **`upgrade`:** Upgrades installed packages to the latest eligible versions available from the configured Alpine package repositories.
+- **`--no-cache`:** Prevents APK from using a local cache path, avoiding retention of package index and cache data in the image.
 
-We include this step because the base image may contain packages with known vulnerabilities. Upgrading the installed packages helps incorporate available security fixes and can reduce the number of vulnerabilities identified by **Trivy** during our subsequent image scan.
-
-> **Important:** `apk upgrade` upgrades all eligible installed packages, not just packages with known vulnerabilities. It also cannot fix vulnerabilities for which no patched package is available. We will scan the resulting image with Trivy to identify any remaining findings.
+> **Note:** We are using `apk upgrade` because Trivy identified vulnerabilities in packages included in our existing Nginx base image. For this project, we are demonstrating **two approaches to vulnerability remediation**:
+>
+> - **Backend application dependencies:** We updated the affected Maven dependency versions in `pom.xml`.
+> - **Container operating-system packages:** We used `apk upgrade` to incorporate available security fixes into the Alpine packages.
+>
+> You can choose between two approaches:
+> - **Upgrade all eligible packages:** `apk upgrade --no-cache` upgrades all installed packages for which newer eligible versions are available.
+> - **Selective upgrade:** Identify the vulnerable package names from Trivy's findings and pass only those packages to `apk upgrade`. For example:
+>   ```dockerfile
+>   RUN apk --no-cache upgrade <package-1> <package-2>
+>   ```
+>   This upgrades the specified packages **along with any dependencies required for the upgrade**, rather than upgrading every installed package.
+>
+> In **production environments**, we would generally prefer controlled and tested package updates rather than upgrading packages indiscriminately during every image build. We would also manage package versions to maintain **build reproducibility and predictability**.
+>
+> This implementation demonstrates both remediation techniques. We will rerun Trivy to verify the fixes and identify any remaining vulnerabilities.
 
 ---
 
@@ -3646,12 +3927,17 @@ We include this step because the base image may contain packages with known vuln
 RUN rm /etc/nginx/conf.d/default.conf
 ```
 
-- **`rm`** is a Linux command used to remove files or directories.
-- **`/etc/nginx/conf.d/default.conf`** is the default Nginx server configuration provided by the base image.
+The **`rm`** command removes files or directories in Linux.
 
-We remove this file because we are supplying our own application-specific Nginx configuration in the next step. This avoids retaining an unused default server configuration in our image.
+- **`/etc/nginx/conf.d/default.conf`:** The default Nginx server configuration provided by the base image. It defines the default virtual server configuration.
 
-> **Note:** Our custom `nginx.conf` does not include `/etc/nginx/conf.d/*.conf`, so the default configuration would not be loaded by our current setup even if it remained in the image. We remove it to keep the image clean and avoid confusion about which server configuration is being used.
+We remove this file because we are supplying our **own application-specific Nginx configuration** in the next instruction. This prevents the default server configuration from being retained unnecessarily and avoids confusion about which server configuration should be used.
+
+> **Important:** Notice that we are removing `default.conf` from `/etc/nginx/conf.d/`, whereas our custom configuration is copied to `/etc/nginx/nginx.conf`. These are **two different configuration locations**:
+> - **`/etc/nginx/nginx.conf`:** Nginx's main configuration file, which controls global settings and can include additional server configurations.
+> - **`/etc/nginx/conf.d/default.conf`:** A separate server configuration file, typically loaded through an `include` directive in the main configuration.
+>
+> Our custom `nginx.conf` does not include `/etc/nginx/conf.d/*.conf`. Therefore, the default configuration would not be loaded by our current setup even if it remained in the image. We remove it to **keep the image clean and avoid potential configuration conflicts** if additional configuration includes are introduced later.
 
 ---
 
@@ -3663,19 +3949,19 @@ COPY nginx.conf /etc/nginx/nginx.conf
 
 The **`COPY`** instruction copies files from the build context into the container image.
 
-- **`nginx.conf`** is our application-specific Nginx configuration file present in the frontend build context.
-- **`/etc/nginx/nginx.conf`** is the destination path where Nginx expects its main configuration file.
+- **`nginx.conf`:** Our application-specific Nginx configuration file present in the frontend build context.
+- **`/etc/nginx/nginx.conf`:** The destination path where Nginx expects its **main configuration file**.
 
-We replace the default Nginx configuration with our own because we need Nginx to do more than simply serve static content. Our configuration defines the listening port, static content directory, API reverse proxy, and routing behavior for the React application.
+Unlike the previous `RUN rm` instruction, which removes the default server configuration, this instruction **replaces the base image's main Nginx configuration** with our own. We do this because we need Nginx to do more than simply serve static content. Our configuration defines the listening port, static content directory, API reverse proxy, and routing behaviour for the React application.
 
 In particular, our configuration provides the following functionality:
 
 - **Port `8080`:** Nginx listens on port `8080` instead of the default HTTP port `80`.
 - **Static content:** Serves the React production build from `/usr/share/nginx/html`.
 - **API reverse proxy:** Forwards requests beginning with `/api/` to our backend Kubernetes Service, `cwvj-backend`, on port `8080`.
-- **React routing:** Uses `try_files` to serve `index.html` when a requested frontend route does not correspond to an existing static file. This supports client-side routing in our React application.
+- **React routing:** Uses `try_files` to serve `index.html` when a requested frontend route does not correspond to an existing static file. This supports **client-side routing** in our React application.
 
-> **Important:** The Nginx configuration is what connects our frontend and backend at runtime. The browser communicates with Nginx, and Nginx forwards API requests to the backend Service. This allows the frontend to use the same origin for both static content and API requests.
+> **Important:** The custom Nginx configuration connects our frontend and backend at runtime. The browser communicates with Nginx, and Nginx forwards API requests to the backend Kubernetes Service. This allows the frontend to use the **same origin for both static content and API requests**, avoiding the need for the browser to communicate directly with the backend Service.
 
 ---
 
@@ -3700,41 +3986,24 @@ We also intentionally leave these files without an ownership change. Nginx only 
 
 ---
 
-**6. `RUN chown`, `touch`, and `chown`**
+**6. `RUN chown` – Prepare NGINX Cache Directory**
 
 ```dockerfile
-RUN chown -R nginx:nginx /var/cache/nginx \
-    && touch /tmp/nginx.pid \
-    && chown nginx:nginx /tmp/nginx.pid
+RUN chown -R nginx:nginx /var/cache/nginx
 ```
 
-We use this `RUN` instruction to prepare the directories and PID file that Nginx needs when running as a **non-root user**.
+We use this `RUN` instruction to ensure that NGINX has the required permissions to write to its cache directory when running as a **non-root user**.
 
-Let's understand each command:
-
-**First, assign ownership of the Nginx cache directory:**
+Let's understand the command:
 
 - **`chown`** changes the ownership of files and directories.
 - **`-R`** applies the ownership change recursively to the specified directory and its contents.
 - **`nginx:nginx`** follows the `USER:GROUP` format. The first `nginx` specifies the owner (user), and the second specifies the group.
-- **`/var/cache/nginx`** is the directory used by Nginx for temporary files and related caching operations.
+- **`/var/cache/nginx`** is used by NGINX for temporary files and caching operations.
 
-Nginx may need to create temporary files while handling requests. Since we will run Nginx as the `nginx` user, we ensure that it has the required write permissions on its cache directory.
+Since NGINX runs as the `nginx` user, we assign ownership of this directory to ensure it has the **necessary write permissions**.
 
-**Next, create the PID file:**
-
-- **`touch`** creates an empty file if it does not already exist.
-- **`/tmp/nginx.pid`** is the location where Nginx will store the process ID of its main process.
-
-**Finally, assign ownership of the PID file:**
-
-- **`chown nginx:nginx`** assigns the PID file to the `nginx` user and group, allowing the Nginx process to write its process ID.
-
-The `&&` operator ensures that each command executes only if the preceding command succeeds.
-
-> **Important:** Our custom `nginx.conf` explicitly sets `pid /tmp/nginx.pid;`. Since Nginx runs as a non-root user, it must have permission to write to this file and its temporary-file directories.
-
-> **Production Insight:** Running Nginx as a non-root user requires more than just adding the `USER` instruction. We must also ensure that the process has the necessary permissions to access configuration files and write to the directories it needs at runtime.
+> **Production Insight:** Running NGINX as a non-root user requires more than just adding the `USER` instruction. We must ensure that the user has the **necessary permissions to access configuration files and write to runtime directories**, without granting unnecessary privileges.
 
 ---
 
@@ -3744,13 +4013,14 @@ The `&&` operator ensures that each command executes only if the preceding comma
 USER nginx
 ```
 
-- **`USER`** specifies the user under which subsequent instructions and the container's default runtime process execute.
-- **`nginx`** refers to the non-root user already provided by our base Nginx image.
+The **`USER`** instruction specifies the user (and optionally the group) under which subsequent Dockerfile instructions and the container's default runtime process execute.
 
-We switch to this user so that Nginx does not run with root privileges. Unlike our backend Dockerfile, we don't need to create a dedicated user and group because the official Nginx image already provides them.
+- **`nginx`:** Refers to the **non-root user already created by the official Nginx base image**. The base image creates both the `nginx` user and its corresponding group, so we do not need to create them explicitly in our Dockerfile.
+  
+We switch to this user so that Nginx does not run with **root privileges**. From this point onwards, the container's default runtime process runs under the **non-root `nginx` account**.
 
-From this point onwards, Nginx runs under the **non-root `nginx` account**.
-
+> **Why didn't we create a user explicitly, as we did in the backend?** In our backend Dockerfile, we explicitly created the **`appuser` user and group** with a dedicated UID and GID because we wanted a specific application identity to own and run our Java application. In this frontend Dockerfile, the official Nginx image already provides the required `nginx` user and group, so creating another user would be redundant.
+>
 > **Production Insight:** Running Nginx as a non-root user follows the **principle of least privilege**. The web server does not need unrestricted root privileges to serve static files and proxy API requests.
 
 ---
@@ -3776,21 +4046,44 @@ We use port `8080` instead of the default HTTP port `80` because ports below `10
 CMD ["nginx", "-g", "daemon off;"]
 ```
 
-The **`CMD`** instruction specifies the default command to execute when a container starts.
+The **`CMD`** instruction specifies the **default command** to execute when a container starts.
 
 Let's break down the command:
 
-- **`nginx`** invokes the Nginx server executable.
-- **`-g`** allows us to specify a global Nginx configuration directive.
-- **`daemon off;`** tells Nginx to run in the foreground rather than starting as a background daemon.
+- **`nginx`:** Invokes the Nginx server executable.
+- **`-g`:** Allows us to specify a global Nginx configuration directive.
+- **`daemon off;`:** Tells Nginx to run in the **foreground** rather than starting as a background daemon.
 
-We use the **exec form** of `CMD`, represented by JSON-array syntax, instead of the shell form.
+We use the **exec form** of `CMD`, represented by JSON-array syntax, instead of the shell form. This executes the specified command directly without introducing an intermediate shell.
 
-One important detail is that the official Nginx base image already defines an **`ENTRYPOINT`** script (`/docker-entrypoint.sh`). This script runs the image's startup hooks and then executes the command supplied through `CMD`.
+**Why `CMD` here but `ENTRYPOINT` in the backend?**
 
-Keeping Nginx in the foreground ensures that it remains the main application process in the container and allows Docker and Kubernetes to manage its lifecycle properly.
+- **Backend Dockerfile:** We use `ENTRYPOINT ["java", "-jar", "app.jar"]` because **Java is the primary application executable**. We want the container to launch our Spring Boot application as its main process.
+- **Frontend Dockerfile:** The official Nginx base image already defines an **`ENTRYPOINT`** (`/docker-entrypoint.sh`). This script executes applicable initialization hooks from `/docker-entrypoint.d/` and subsequently runs the command supplied through `CMD`.
 
-> **Production Insight:** Containers are expected to run their primary application process in the foreground. Running Nginx with `daemon off;` ensures the container remains active while Nginx is running and can be stopped through the normal container lifecycle.
+Therefore, our startup sequence is:
+
+```text
+Container starts
+      |
+      v
+/docker-entrypoint.sh
+      |
+      v
+Execute Nginx initialization scripts
+      |
+      v
+exec nginx -g "daemon off;"
+      |
+      v
+Nginx runs in the foreground
+```
+
+We deliberately use `CMD` to provide the default Nginx startup command while **preserving the inherited `ENTRYPOINT`**. Defining our own `ENTRYPOINT` would replace the base image's startup script and bypass its initialization hooks unless we explicitly invoked that script ourselves.
+
+> **Important:** The official Nginx image already defines the same `CMD` instruction. We explicitly retain it in our Dockerfile to make the intended startup command visible and self-documenting.
+
+**Production Insight:** Containers should run their primary application process in the **foreground**. The `daemon off;` directive ensures Nginx remains the main running process, allowing Docker and Kubernetes to manage its lifecycle, monitor its status, and stop it through the normal container lifecycle.
 
 ---
 
@@ -3866,7 +4159,6 @@ frontend-image-build-scan-job:
   needs: frontend-job
 
   steps:
-
     # Checkout the repository so the Dockerfile and package.json are available.
     - name: Checkout source code
       uses: actions/checkout@v7
@@ -3889,7 +4181,6 @@ frontend-image-build-scan-job:
       working-directory: cwvj-3tier-mega-project/frontend
       run: |
         VERSION=$(node -p "require('./package.json').version")
-
         echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
     # Generate a readable image tag using the application version and short commit SHA.
@@ -3897,11 +4188,8 @@ frontend-image-build-scan-job:
       id: image-tag
       env:
         APP_VERSION: ${{ steps.app-version.outputs.version }}
-        GITHUB_SHA: ${{ github.sha }}
       run: |
-        SHORT_SHA="${GITHUB_SHA::7}"
-        IMAGE_TAG="${APP_VERSION}-${SHORT_SHA}"
-
+        IMAGE_TAG="${APP_VERSION}-${GITHUB_SHA::7}"
         echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
     # Build the frontend container image using the validated frontend build artifact.
@@ -3921,6 +4209,7 @@ frontend-image-build-scan-job:
     - name: Scan frontend container image with Trivy
       uses: aquasecurity/trivy-action@v0.36.0
       with:
+        scan-type: image
         image-ref: cwvj-mega-frontend:${{ steps.image-tag.outputs.image_tag }}
         severity: HIGH,CRITICAL
         exit-code: '1'
@@ -4002,6 +4291,8 @@ First, read the application version:
 
 Unlike the backend, which uses Maven to retrieve the version from `pom.xml`, the frontend uses Node.js to read it from `package.json`. Node.js is already available on the GitHub-hosted runner, so no additional tool installation is required.
 
+---
+
 Next, generate the image tag:
 
 ```yaml
@@ -4009,36 +4300,25 @@ Next, generate the image tag:
   id: image-tag
   env:
     APP_VERSION: ${{ steps.app-version.outputs.version }}
-    GITHUB_SHA: ${{ github.sha }}
   run: |
-    SHORT_SHA="${GITHUB_SHA::7}"
-    IMAGE_TAG="${APP_VERSION}-${SHORT_SHA}"
-
+    IMAGE_TAG="${APP_VERSION}-${GITHUB_SHA::7}"
     echo "image_tag=$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 ```
 
-The step receives two values through environment variables:
-
-- **`APP_VERSION`** receives the application version produced by the previous step.
-- **`GITHUB_SHA`** contains the full commit SHA associated with the workflow run.
-
-The expression `${GITHUB_SHA::7}` extracts the first seven characters of the commit SHA. For example, `a1b2c3d4e5f6...` becomes `a1b2c3d`.
-
-We combine both values to form the image tag:
-
-`0.1.0-a1b2c3d`
-
-Finally, writing `image_tag=$IMAGE_TAG` to **`$GITHUB_OUTPUT`** creates another Step Output. Since this step has `id: image-tag`, subsequent steps can reference the generated tag using `${{ steps.image-tag.outputs.image_tag }}`.
+- **`APP_VERSION`:** Receives the frontend application version extracted from `package.json` by the previous step.
+- **`GITHUB_SHA`:** Uses GitHub's predefined environment variable containing the full commit SHA. `${GITHUB_SHA::7}` extracts its first seven characters.
+- **Image tag:** Combines both values to generate a tag such as `0.1.0-a1b2c3d`.
+- **Step Output:** Writes the generated tag to `$GITHUB_OUTPUT`, making it available to subsequent steps through `${{ steps.image-tag.outputs.image_tag }}`.
 
 The complete flow is:
 
 ```text
 package.json → APP_VERSION ─┐
-                            ├→ Image Tag → Step Output → Build Image → Trivy Scan
-GITHUB_SHA → SHORT_SHA ─────┘
+                            ├→ Image Tag → Build Image → Trivy Scan
+GITHUB_SHA → Short SHA ─────┘
 ```
 
-**Production Insight:** We deliberately avoid a generic tag such as `latest`. Combining the application version with the commit SHA makes it easier to associate an image with its application release and source code revision, which is useful for tracing, promoting, and rolling back images.
+> **Production Insight:** As explained in the backend implementation, combining the application version with the commit SHA provides **traceability between the container image, application release, and source code revision**, making image promotion and rollback easier.
 
 ---
 
@@ -4057,21 +4337,10 @@ We can now build the image using the **Docker Build and Push Action**:
 - **`context`** specifies the directory Docker uses as the build context. It includes the downloaded `dist` directory and the files needed by the Docker build.
 - **`file`** identifies the Dockerfile that defines how the frontend application is containerized.
 - **`tags`** assigns the image the version and commit-based tag generated in the previous step.
-- **`load: true`** loads the built image into the runner's local Docker image store, making it available for verification and scanning.
+- **`load: true`**: Loads the built image into the runner's **local Docker image store**, making it available for subsequent verification and Trivy scanning.
+  > **If omitted**, the image will not automatically be loaded into the local image store when using the `docker-container` builder. Consequently, `docker images` will not show the newly built image, and the subsequent Trivy scan using the local `image-ref` will not be able to find it.
 
 Our frontend Dockerfile uses Nginx to serve the compiled frontend files. Its `COPY dist /usr/share/nginx/html` instruction places the validated frontend build in Nginx's web root. The Dockerfile also includes the security and runtime configuration we established earlier.
-
-In particular, the following instruction updates the Alpine packages in the base image:
-
-```dockerfile
-RUN apk upgrade --no-cache
-```
-
-This addresses the package vulnerabilities identified during our earlier frontend image checks. The Dockerfile also configures Nginx to run as a **non-root user** and prepares the directories and PID file required by that user.
-
-**Important:** These Dockerfile changes are already part of our frontend containerization configuration. We do not need to introduce the backend-specific dependency fixes here. Trivy will scan the resulting frontend image, and we expect the image to pass without HIGH or CRITICAL vulnerabilities.
-
-We are **not publishing the image to a registry yet**. The `load: true` option ensures that the image is available locally for the next steps. Publishing to Amazon ECR is a separate activity.
 
 ---
 
@@ -4092,18 +4361,20 @@ Finally, we scan the image for security vulnerabilities:
 - name: Scan frontend container image with Trivy
   uses: aquasecurity/trivy-action@v0.36.0
   with:
+    scan-type: image
     image-ref: cwvj-mega-frontend:${{ steps.image-tag.outputs.image_tag }}
     severity: HIGH,CRITICAL
     exit-code: '1'
 ```
 
-- **`image-ref`** identifies the exact local container image to scan, including its generated tag.
-- **`severity: HIGH,CRITICAL`** limits the findings that trigger this security gate to High and Critical vulnerabilities.
-- **`exit-code: '1'`** makes the step fail if Trivy finds vulnerabilities matching the configured severity levels.
+- **`scan-type: image`:** Explicitly tells Trivy to use **container image scanning mode**. Although `image` is the action's default, specifying it makes our scanning intention clear and self-documenting.
+- **`image-ref`:** Identifies the exact **locally built container image** to scan, including its generated tag. This ensures we scan the image produced by our preceding Docker build step.
+- **`severity: HIGH,CRITICAL`:** Limits the findings that trigger this security gate to **High and Critical vulnerabilities**.
+- **`exit-code: '1'`:** Makes the Trivy step return a **non-zero exit code** if vulnerabilities matching the configured severity levels are found, causing the step and consequently the job to fail.
 
 Trivy is therefore not just reporting vulnerabilities for later review. It acts as a **security gate** in our workflow.
 
-Although we expect the image to pass because we have already updated the Alpine packages, the scan remains strict. If a matching vulnerability appears in a future build, the job will fail rather than silently allowing the image to progress.
+Although we expect the image to pass because we have upgraded the available Alpine packages, the scan remains strict. **Package upgrades do not guarantee that all vulnerabilities are eliminated.** If a matching vulnerability is identified in a future build, the job will fail rather than silently allowing the image to progress.
 
 **Production Insight:** A successfully built image should not automatically proceed toward a registry or deployment. It must first pass the required security checks. Our validation boundary is **Build → Verify → Scan**.
 
@@ -4149,66 +4420,43 @@ Once the changes are pushed, GitHub Actions automatically triggers the workflow 
 
 #### Observe the Workflow
 
-When the workflow runs, observe the new **`frontend-image-build-scan-job`** and verify that it completes the following steps successfully:
+When the workflow runs, observe the new **`frontend-image-build-scan-job`** and verify that it completes the following steps:
 
-- **Download frontend build:** Downloads the `frontend-dist` artifact uploaded by `frontend-job`.
-- **Verify frontend build:** Confirms that the expected files are available in the `dist` directory.
-- **Generate image tag:** Combines the application version from `package.json` with the short Git commit SHA.
-- **Build frontend container image:** Builds the image using the existing frontend Dockerfile.
-- **Verify frontend container image:** Displays the locally available `cwvj-mega-frontend` image and its tag.
-- **Scan frontend container image with Trivy:** Scans the image for HIGH and CRITICAL vulnerabilities.
+| Step | What to verify |
+|---|---|
+| **Download frontend build** | Downloads the `frontend-dist` artifact uploaded by `frontend-job`. |
+| **Verify frontend build** | Confirms that the expected production files are available in the `dist` directory. |
+| **Generate image tag** | Combines the application version from `package.json` with the short Git commit SHA. |
+| **Build frontend container image** | Builds the image using the existing frontend Dockerfile and loads it into the runner's local Docker image store using `load: true`. |
+| **Verify frontend container image** | Displays the locally available `cwvj-mega-frontend` image and its generated tag. |
+| **Trivy image scan** | Scans the built image for **HIGH and CRITICAL vulnerabilities** using `scan-type: image`. |
 
-Our Trivy configuration is:
+The Trivy scan is configured with:
 
-```yaml
-- name: Scan frontend container image with Trivy
-  uses: aquasecurity/trivy-action@v0.36.0
-  with:
-    image-ref: cwvj-mega-frontend:${{ steps.image-tag.outputs.image_tag }}
-    severity: HIGH,CRITICAL
-    exit-code: '1'
-```
+- **`severity: HIGH,CRITICAL`:** Limits the findings that trigger the security gate to High and Critical vulnerabilities.
+- **`exit-code: '1'`:** Makes Trivy return a non-zero exit code when matching vulnerabilities are found, causing the **Trivy step and container image job to fail**.
 
-- **`severity: HIGH,CRITICAL`** configures the scan to report vulnerabilities classified as HIGH or CRITICAL.
-- **`exit-code: '1'`** tells Trivy to return a non-zero exit code when matching vulnerabilities are found.
-- GitHub Actions treats that non-zero exit code as a failed step, causing the container image job to fail.
+Because the frontend Dockerfile incorporates the intended Alpine package vulnerability remediation, we **expect the image to pass the scan**. However, this is an expectation, not a guarantee. The actual result depends on the vulnerabilities identified in the resulting image and Trivy's vulnerability database.
 
-Because the frontend Dockerfile already incorporates the intended package vulnerability remediation, we **expect the image to pass the scan**. However, **this is an expectation, not a guarantee**. The actual result depends on the vulnerabilities detected in the resulting image.
-
-> **Important:** The **security gate remains strict** even though we expect the scan to pass. We are **not disabling Trivy, lowering the severity threshold, or changing the exit code** to hide vulnerabilities. If a **HIGH or CRITICAL vulnerability** is detected, the job will **fail as intended**.
+> **Important:** The **security gate remains strict**. We are not disabling Trivy, lowering the severity threshold, or changing the exit code to hide vulnerabilities. If a **HIGH or CRITICAL vulnerability** is detected, the job will **fail as intended**.
 
 ---
 
-#### Why Do We Need Both Filesystem and Container Image Scans?
+#### Why Do We Need Both Repository and Container Image Scans?
 
-Our workflow already runs a Trivy filesystem scan near the beginning:
+Our workflow performs two Trivy scans at different stages. They inspect different targets and serve complementary purposes:
 
-```text
-Checkout → Trivy Filesystem Scan → Build + Test → Containerize → Trivy Image Scan
-```
+| Scan | What It Examines | Purpose |
+|---|---|---|
+| **Repository scan (`scan-type: repo`)** | Supported repository files, particularly dependency manifests and lockfiles. | Identifies known dependency vulnerabilities and exposed secrets early in the workflow. |
+| **Container image scan (`scan-type: image`)** | The actual built image, including operating-system packages and supported application components. | Identifies vulnerabilities in the final container artifact that we intend to publish and deploy. |
 
-These scans serve different purposes:
+The key differences are:
 
-- **Filesystem scan:** Performs an early security check against repository files and supported dependency definitions.
-- **Container image scan:** Inspects the built image, including its operating system packages and supported application components.
+- **Repository scan:** Helps identify security issues in supported dependency definitions before containerization. However, it does **not inspect packaged binaries such as JAR files or operating-system packages inside the image**.
+- **Container image scan:** Validates the **actual built image**, including its base image packages and supported application artifacts. For example, our backend image scan can identify vulnerabilities in the packaged Java application that the repository scan may not detect.
 
-The container image scan is particularly important because it examines the actual Nginx-based image we intend to publish and deploy. A successful filesystem scan alone does not establish that the final container image is free of vulnerabilities.
-
-**Production Insight:** Filesystem and container image scans are **complementary security checks**. The first helps identify issues early, while the second validates the artifact produced by the container build.
-
----
-
-Once the workflow succeeds, we have completed the frontend containerization flow:
-
-```text
-Validated Frontend Build → Download Artifact → Verify Build → Build Image → Verify Image → Trivy Scan
-```
-
-The key outcome is that the frontend container image is built from the **same frontend build that was already tested and validated**, and the resulting image must pass the configured security gate.
-
-The backend and frontend required different remediation approaches because their technology stacks differ. The backend needed Java dependency updates, while the frontend Dockerfile already incorporates the intended remediation for the identified image vulnerabilities. In both cases, **the security gate remains unchanged**.
-
-With both backend and frontend containerization and scans complete, the next step is to **publish the exact scanned images to Amazon ECR without rebuilding them**.
+> **Production Insight:** Repository and container image scans are **complementary security checks**. The repository scan helps identify issues early, while the image scan validates the actual artifact produced by the container build. **Passing the repository scan does not guarantee that the final container image is vulnerability-free.**
 
 ---
 
@@ -4254,35 +4502,105 @@ We will publish images using our existing application-version and Git commit SHA
 
 ---
 
-#### 2. Create a GitHub OIDC Identity Provider
+#### 2. Create an IAM OIDC Identity Provider for GitHub Actions
 
-Before configuring GitHub Actions to access AWS, let's understand how **AWS identities and credentials** work and why we are using **OpenID Connect (OIDC)**.
+Before configuring GitHub Actions to access AWS, let's understand **IAM identities, federation, and why we are using OpenID Connect (OIDC)**.
 
-For our discussion, there are two relevant IAM identity types:
+- **IAM identities:** AWS provides two relevant IAM identity types:
 
-- **IAM users:** Identities created within AWS IAM. A user can have a **username and password** for console access, **access keys** for programmatic access, or both. These are long-term credentials.
-- **IAM roles:** Identities that can be assumed by authorized principals, including IAM users, AWS services, and **federated identities**. Roles do not have their own long-term passwords or access keys. When a role is successfully assumed, **AWS STS issues temporary security credentials**.
+  | Identity | Description |
+  |---|---|
+  | **IAM user** | An identity created within AWS IAM. It can have a console password, long-term access keys for programmatic access, or both. |
+  | **IAM role** | An identity that can be assumed by authorized principals, including IAM users, AWS services, and federated identities. Roles do not have their own long-term passwords or access keys. When assumed, **Amazon STS issues temporary security credentials**. |
 
-**Where does federation fit in?**
+- **Federation:** Allows identities managed by an external identity provider (IdP) to access another system without creating separate identities in that system. Two commonly used federation standards are:
+  - **SAML 2.0:** Commonly used for corporate workforce identity federation.
+  - **OIDC:** Commonly used for applications and workloads, including GitHub Actions, to establish trust with cloud providers.
 
-**Federation** allows identities created and managed elsewhere to access another system without creating separate identities there.
+  These are common use cases, not exclusive rules. AWS supports both standards for appropriate federation scenarios.
 
-- **SAML 2.0:** Commonly used for corporate workforce identity federation.
-- **OIDC:** Commonly used by applications and workloads, including GitHub Actions, to establish trust with AWS.
+- **Our approach:** We will configure **OIDC federation between GitHub Actions and AWS IAM**. Instead of storing long-lived AWS access keys in GitHub Secrets, we will allow GitHub Actions to request an OIDC token from GitHub and exchange it for **temporary AWS credentials** through Amazon STS.
 
-These are common patterns, not exclusive rules. AWS supports both standards for appropriate federation use cases.
+- **Create the AWS IAM OIDC identity provider:** We need to register GitHub's OIDC issuer in our AWS account. This involves creating an **IAM OIDC identity provider resource** that tells AWS which external issuer to trust and which audience to accept.
 
-> **Our approach:** We will configure **OIDC federation between GitHub Actions and AWS IAM**. When a workflow needs AWS access, **GitHub Actions requests an OIDC token (JWT) from GitHub's OIDC provider** (`https://token.actions.githubusercontent.com`). It then presents this token to **AWS STS** to request access to an IAM role. AWS STS validates the token and evaluates the role's trust-policy conditions. If the request is authorized, STS issues **temporary AWS security credentials** for that role. This eliminates the need to store long-lived AWS access keys in GitHub Secrets.
+  The configuration requires:
 
-**How does the authentication and authorization process work?**
+  | Setting | Value |
+  |---|---|
+  | Provider type | OpenID Connect |
+  | Provider URL | `https://token.actions.githubusercontent.com` |
+  | Audience | `sts.amazonaws.com` |
+  >**Reference**: https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws
 
-1. **Request an OIDC token:** The GitHub Actions workflow uses the `id-token: write` permission to request a JWT from GitHub's OIDC provider.
-2. **Request role assumption:** The AWS credentials action presents this token to AWS STS and requests to assume the IAM role specified through `role-to-assume` in our workflow.
-3. **Validate the trust relationship:** AWS STS validates the token and evaluates the IAM role's **trust policy**, including conditions such as the token's audience (`aud`) and subject (`sub`). These conditions determine whether the requesting GitHub Actions identity is allowed to assume the role.
-4. **Issue temporary credentials:** If the request is authorized, AWS STS returns **temporary AWS security credentials** for the assumed role.
-5. **Authorize AWS operations:** GitHub Actions uses these credentials to access AWS. The IAM role's **permissions policies** determine which AWS actions and resources are allowed.
 
-**Remember:** The **OIDC provider establishes trust**, the **IAM role's trust policy controls who can assume the role**, the **permissions policies determine what the assumed role can do**, and **AWS STS issues temporary credentials**.
+  **Understanding what AWS calls an IAM OIDC identity provider:**
+
+  GitHub is the **actual OIDC provider and token issuer**. It generates and signs the JWT requested by our GitHub Actions workflow.
+
+  The **IAM OIDC identity provider** is an AWS-side trust configuration. It registers GitHub's issuer URL and audience so that Amazon STS can recognize and validate tokens issued by GitHub.
+
+  > **Important:** AWS IAM does not generate or issue the GitHub OIDC token. Creating this provider resource only establishes the trust configuration; it does not, by itself, grant GitHub Actions access to AWS resources. We must also create an IAM role with a trust policy specifying which GitHub Actions identities can assume it.
+
+- **Authentication and authorization flow:** Once the IAM OIDC provider and IAM role are configured, the process works as follows:
+
+  1. **Request an OIDC token:** The GitHub Actions workflow uses the `id-token: write` permission to request a **JSON Web Token (JWT)** from GitHub's OIDC provider. This permission only allows the workflow to request an OIDC token; it does not grant access to AWS resources.
+
+  2. **Obtain the token and request role assumption:** The `aws-actions/configure-aws-credentials` action obtains the GitHub-issued OIDC token and presents it to **Amazon STS**, requesting to assume the IAM role specified through `role-to-assume`.
+
+  3. **Validate the token and trust relationship:** Amazon STS validates the token using the registered **IAM OIDC identity provider configuration**, including the issuer and audience. It then evaluates the IAM role's **trust policy**, including conditions such as the token's `aud` and `sub` claims. These conditions restrict which GitHub repositories, branches, or environments are permitted to assume the role.
+
+  4. **Issue temporary credentials:** If the token and trust-policy conditions are valid, Amazon STS returns **temporary AWS security credentials**, consisting of an access key ID, secret access key, and session token.
+
+  5. **Authorize AWS operations:** GitHub Actions uses these credentials to make AWS API calls. The IAM role's **permissions policies** determine which AWS actions and resources are allowed.
+
+  > **Note:** The complete authentication and authorization flow can be summarized as:
+  >
+  > **GitHub Actions Workflow** (`id-token: write`) → **configure-aws-credentials** (requests OIDC token) → **GitHub OIDC Provider** (issues signed JWT) → **configure-aws-credentials** (presents JWT to Amazon STS using `role-to-assume`) → **Amazon STS** (validates token using the registered IAM OIDC provider and evaluates the IAM role's trust policy) → **Assumed IAM Role** (temporary AWS credentials) → **GitHub Actions Workflow** (uses temporary credentials) → **AWS Services** (access governed by IAM permissions policies).
+
+- **Understanding the OIDC provider, issuer, and identity:**
+
+  It is important to distinguish between the **external OIDC provider**, the **AWS IAM OIDC identity provider resource**, and the **OIDC identity provider configuration associated directly with an EKS cluster**.
+
+  - **External OIDC provider / issuer:** The external system that generates and signs OIDC tokens. For example, GitHub, Amazon EKS, or Okta.
+  - **IAM OIDC identity provider:** An AWS IAM resource that registers an external OIDC issuer and its accepted audiences. This allows AWS STS to trust and validate tokens issued by that provider when a user or workload requests to assume an IAM role.
+  - **EKS OIDC identity provider configuration:** A configuration associated directly with an EKS cluster that allows its Kubernetes API server to authenticate users using tokens issued by an external OIDC provider, such as Okta.
+
+  Neither the AWS IAM OIDC identity provider resource nor the EKS OIDC identity provider configuration issues tokens. The **external OIDC provider is the actual token issuer**.
+
+  An OIDC token contains three important claims:
+
+  - **`iss` (Issuer):** Identifies who issued the token.
+  - **`sub` (Subject):** Identifies the entity represented by the token.
+  - **`aud` (Audience):** Identifies the intended recipient of the token.
+
+  Consider these four scenarios:
+
+  | Scenario | Where the OIDC provider is configured | External OIDC Provider / Issuer (`iss`) | Subject (`sub`), Whose Identity? | Audience (`aud`), Intended Recipient |
+  |---|---|---|---|---|
+  | **Kubernetes Pod accessing AWS (IRSA)** | AWS IAM → Identity Providers | Amazon EKS cluster's OIDC issuer | Kubernetes ServiceAccount associated with the Pod | AWS STS (`sts.amazonaws.com`) |
+  | **GitHub Actions accessing AWS** | AWS IAM → Identity Providers | GitHub (`https://token.actions.githubusercontent.com`) | GitHub Actions workflow identity, including repository and applicable branch or environment context | AWS STS (`sts.amazonaws.com`) |
+  | **Okta user accessing AWS** | AWS IAM → Identity Providers | Okta's OIDC issuer | Okta-authenticated user represented by the token | Audience/client ID registered with the IAM OIDC provider and checked by the IAM role's trust policy |
+  | **Okta user accessing Kubernetes (EKS)** | EKS → Access → OIDC identity providers | Okta's OIDC issuer | Okta-authenticated user. EKS maps a configured token claim, such as `sub` or `email`, to the Kubernetes username and can also map a groups claim. | Client ID configured when associating the OIDC provider with EKS |
+
+  Notice that the **issuer identifies who generated the token, not whose identity the token represents**. The `sub` claim identifies the subject, while `aud` identifies the intended recipient.
+
+  **Understanding the difference between AWS IAM and EKS OIDC configurations:**
+
+  For **IRSA, GitHub Actions federation, and Okta-to-AWS federation**, AWS IAM has an IAM OIDC identity provider resource registered for the respective external issuer:
+
+  - For IRSA, it registers the **EKS cluster's OIDC issuer**.
+  - For GitHub Actions, it registers **GitHub's OIDC issuer**.
+  - For Okta-to-AWS federation, it registers **Okta's OIDC issuer**.
+
+  In these scenarios, **AWS STS validates the external OIDC token and evaluates the IAM role's trust policy**. If the conditions are satisfied, STS issues temporary AWS credentials. The IAM role's permissions policies determine which AWS resources the identity can access.
+
+  The EKS OIDC identity provider configuration shown under **EKS → Access → OIDC identity providers** serves a different purpose. Here, we associate an external provider such as Okta directly with the EKS cluster. The Kubernetes API server validates the token, maps the configured username and groups claims, and **Kubernetes RBAC determines what the user can do inside the cluster**.
+
+  Unlike AWS IAM federation, this direct EKS OIDC authentication does not issue AWS credentials or grant the user permissions to access AWS services through an IAM role.
+
+  > **Important – Our Project:** We are not using the direct Okta-to-EKS OIDC authentication approach. Instead, we use **GitHub OIDC → AWS STS → IAM Role → EKS Access Entry → Kubernetes RBAC**. First, GitHub Actions assumes an IAM role to access AWS. We then associate that IAM role with our EKS cluster through an Access Entry, map it to a Kubernetes group, and use Kubernetes RBAC to grant the required permissions.
+
+  > **Important – GitHub Subject Claims:** GitHub's `sub` claim format can vary depending on the workflow context and whether immutable subject claims are enabled. Repositories created after **15 July 2026**, or those that have opted into immutable subject claims, use a format that includes immutable organization and repository IDs. Repository renames or transfers after this date also move to the immutable format. Ensure that the IAM role's trust-policy conditions match the actual `sub` claim emitted by your repository.
 
 ---
 
@@ -4300,7 +4618,7 @@ This step **registers GitHub as a trusted identity provider** in AWS IAM. It doe
 
 We still need to create an **IAM role** that trusts this identity provider and configure its trust policy to allow only the intended GitHub Actions identities.
 
-When we configure the role in our GitHub Actions workflow using `role-to-assume`, we are specifying which IAM role the workflow should request access to. AWS STS then evaluates the role's trust policy before issuing temporary credentials.
+When we configure the role in our GitHub Actions workflow using `role-to-assume`, we are specifying which IAM role the workflow should request access to. Amazon STS then evaluates the role's trust policy before issuing temporary credentials.
 
 > **Important:** The OIDC provider establishes the federation relationship, but **the role's trust policy determines which external identities are allowed to assume it**. The role's permissions policies determine what those identities can do in AWS after successfully assuming it.
 
@@ -4421,7 +4739,7 @@ Use the following trust policy:
 }
 ```
 
-**How to find the Default subject claim prefix:** Go to your GitHub repository → **Settings → Actions → OIDC**. You will find a value similar to the following:
+**How to find the Default subject claim prefix:** Go to your **GitHub repository** → **Settings → Actions → OIDC**. You will find a value similar to the following:
 
 `repo:CloudWithVarJosh@146525273/mega-project-demo@1386577280`
 
@@ -4429,13 +4747,34 @@ Use this value as the base for the `sub` condition in your IAM role's trust poli
 
 **Why are we restricting the trust policy this way?**
 
-Our workflow runs on the `feature/*`, `bugfix/*` and `hotfix/*` branch patterns. We do not want an unrelated repository or an unapproved branch to be able to assume this role.
+Our GitHub Actions workflows run on the `feature/*`, `bugfix/*` and `hotfix/*` branch patterns in the `mega-project-demo` repository. We want to ensure that **only eligible workflow jobs from this specific repository and these approved branches can assume our IAM role**.
 
-- **OIDC provider:** Specifies the trusted identity provider, GitHub.
-- **`aud` condition:** Requires the token's audience to be `sts.amazonaws.com`.
-- **`sub` condition:** Restricts role assumption to our specific GitHub repository and the specified branch patterns.
+---
 
-Notice that the subject uses the repository's **immutable owner and repository IDs**, rather than only its name. We verified this format when troubleshooting the OIDC authentication failure earlier.
+**How does a workflow job get permission to assume the role?**
+
+Our GitHub Actions job will include the following **job-level permissions block**:
+
+```yaml
+permissions:
+  id-token: write
+```
+
+- **`id-token: write`:** Grants the job permission to request an OIDC token from GitHub. It does not grant access to AWS resources by itself.
+- **Runner:** Provides the execution environment for the job. It is not the identity AWS trusts.
+- **Workflow job:** Runs on the runner and uses `aws-actions/configure-aws-credentials` to obtain the GitHub-issued OIDC token and request role assumption through AWS STS.
+
+> **Note:** We will explore GitHub Actions permissions, the `id-token: write` setting, and its role in OIDC authentication in more detail as we progress through the workflow configuration.
+
+---
+
+**What does AWS validate?**
+
+- **OIDC provider:** Identifies GitHub as the trusted external token issuer.
+- **`aud` condition:** Requires the token's audience to be `sts.amazonaws.com`, indicating that it is intended for AWS STS.
+- **`sub` condition:** Restricts role assumption to our specific repository and approved branch patterns.
+
+Notice that the subject uses the repository's **immutable owner and repository IDs**, rather than relying only on repository names. We verified this format when troubleshooting the OIDC authentication failure earlier.
 
 ---
 
@@ -4479,10 +4818,12 @@ Add the following steps to the existing `backend-image-build-scan-job`, **immedi
 ```yaml
 # Save the exact image that passed the security scan as a Docker archive.
 - name: Save backend container image
+  env:
+    IMAGE_TAG: ${{ steps.image-tag.outputs.image_tag }}
   run: |
     docker save \
       -o cwvj-mega-backend.tar \
-      cwvj-mega-backend:${{ steps.image-tag.outputs.image_tag }}
+      "cwvj-mega-backend:${IMAGE_TAG}"
 
 # Upload the exact scanned image so a later job can use the same image.
 - name: Upload backend container image
@@ -4504,16 +4845,20 @@ The first step saves the container image that passed the Trivy scan as a Docker 
 ```yaml
 # Save the exact image that passed the security scan as a Docker archive.
 - name: Save backend container image
+  env:
+    IMAGE_TAG: ${{ steps.image-tag.outputs.image_tag }}
   run: |
     docker save \
       -o cwvj-mega-backend.tar \
-      cwvj-mega-backend:${{ steps.image-tag.outputs.image_tag }}
+      "cwvj-mega-backend:${IMAGE_TAG}"
 ```
 
-- **`docker save`** exports a Docker image, including its layers and image metadata, into an archive that can later be loaded back into Docker.
-- **`-o cwvj-mega-backend.tar`** specifies the output archive file, created in the runner's current working directory.
-- **`cwvj-mega-backend:${{ steps.image-tag.outputs.image_tag }}`** identifies the exact image to save. The tag comes from the earlier `image-tag` step, so we reuse the same image reference rather than generating a new tag.
-- **`|`** allows the shell command to span multiple lines, while each trailing `\` continues the command onto the next line.
+- **`env`:** Defines an environment variable named `IMAGE_TAG` and assigns it the output generated by the earlier `image-tag` step. We use this intermediate environment variable instead of directly interpolating the GitHub expression inside the shell script, following GitHub's recommended approach for handling potentially untrusted values.
+- **`docker save`:** Exports a Docker image, including its layers and image metadata, into an archive that can later be loaded back into Docker.
+- **`-o cwvj-mega-backend.tar`:** Specifies the output archive file, created in the runner's current working directory.
+- **`"cwvj-mega-backend:${IMAGE_TAG}"`:** Identifies the exact image to save. The shell expands `IMAGE_TAG` at runtime, reusing the tag generated by the earlier `image-tag` step rather than generating a new tag. Quoting ensures the expanded value is treated as a single argument.
+- **`|`:** YAML's literal block scalar indicator, which allows the `run` field to contain a multiline shell script.
+- **Trailing `\`:** A shell line-continuation character that allows the Docker command to span multiple lines.
 
 For example, if the generated tag is `0.0.1-SNAPSHOT-8048730`, Docker saves the image `cwvj-mega-backend:0.0.1-SNAPSHOT-8048730`.
 
@@ -4585,6 +4930,24 @@ This job performs five main activities:
 4. **Tag the image for the ECR repository**, preserving the application version and commit SHA generated earlier.
 5. **Push the image to Amazon ECR**, making it available for subsequent deployment stages.
 
+---
+
+#### Configure GitHub Repository Variables
+
+Before running this job, ensure that the following **repository variables** are configured under **GitHub Repository → Settings → Secrets and variables → Actions → Variables**.
+
+| Variable | Example value |
+|---|---|
+| `AWS_REGION` | `ap-south-1` |
+| `AWS_ACCOUNT_ID` | `497613475050` |
+| `AWS_ROLE_ARN` | `arn:aws:iam::497613475050:role/CWVJGitHubActionsECRPushRole` |
+
+> **Note:** Replace the example values with your **actual AWS region, account ID, and IAM role ARN**.
+
+These are **repository variables, not secrets**. They contain configuration values rather than long-lived credentials. AWS authentication is handled securely through **OIDC and the IAM role**.
+
+---
+
 Add the following job to the workflow, at the same level as the existing `backend-job` and `backend-image-build-scan-job`. Do not place it inside another job's `steps:` block.
 
 ```yaml
@@ -4592,6 +4955,7 @@ backend-ecr-push-job:
   name: Push Backend Image to Amazon ECR
   runs-on: ubuntu-26.04
   needs: backend-image-build-scan-job
+  if: github.event_name == 'push'
 
   permissions:
     id-token: write
@@ -4652,15 +5016,7 @@ backend-ecr-push-job:
           "${ECR_REGISTRY}/cwvj-mega-backend:${IMAGE_TAG}"
 ```
 
-Before running this job, ensure that the repository variables used below have been configured under **GitHub repository → Settings → Secrets and variables → Actions → Variables**.
 
-| Variable | Example value |
-|---|---|
-| `AWS_REGION` | `ap-south-1` |
-| `AWS_ACCOUNT_ID` | `497613475050` |
-| `AWS_ROLE_ARN` | `arn:aws:iam::497613475050:role/CWVJGitHubActionsECRPushRole` |
-
-These are **repository variables**, not secrets. They contain configuration values rather than long-lived credentials. AWS authentication is handled through OIDC and the IAM role.
 
 ---
 
@@ -4672,15 +5028,16 @@ backend-ecr-push-job:
   name: Push Backend Image to Amazon ECR
   runs-on: ubuntu-26.04
   needs: backend-image-build-scan-job
-  if: github.event_name != 'pull_request'
+  if: github.event_name == 'push'
 ```
 
 - **`backend-ecr-push-job`** is the unique job ID used to reference this job in workflow expressions.
 - **`name`** defines the human-readable name displayed in the GitHub Actions interface.
 - **`runs-on: ubuntu-26.04`** provisions a **fresh GitHub-hosted runner**, separate from the runner used by `backend-image-build-scan-job`.
-- **`needs: backend-image-build-scan-job`** ensures this job runs only after the image-build-and-scan job succeeds. If that job fails, the publishing job is skipped by default.
+- **`needs: backend-image-build-scan-job`** ensures this job runs only after the image-build-and-scan job succeeds. If that job fails or is skipped, the publishing job is also skipped by default.
+- **`if: github.event_name == 'push'`** restricts this job to workflow runs triggered by a **push event**. This includes commits pushed from a **local Git repository** as well as commits made directly through the **GitHub UI**. The job is skipped for other events, including `pull_request` and `workflow_dispatch`.
 
-We do not need to list `backend-job` in `needs` because `backend-image-build-scan-job` already depends on it. GitHub Actions respects this existing dependency chain.
+We do not need to list `backend-job` in `needs` because `backend-image-build-scan-job` already depends on it. GitHub Actions respects the existing dependency chain, ensuring that the publishing job runs only after all upstream dependencies have completed successfully.
 
 ---
 
@@ -4692,7 +5049,7 @@ permissions:
 ```
 
 - **`permissions`:** Defines the permissions available to the job, including those granted to `GITHUB_TOKEN` and the ability to request an OIDC token. When permissions are explicitly specified, any permission not listed is set to `none`.
-- **`id-token: write`:** Allows the job to request a **GitHub OIDC token**. The `Configure AWS credentials` step presents this token to AWS STS to assume the IAM role `CWVJGitHubActionsECRPushRole` and obtain temporary AWS credentials.
+- **`id-token: write`:** Allows the job to request a **GitHub OIDC token**. The `Configure AWS credentials` step presents this token to Amazon STS to assume the IAM role `CWVJGitHubActionsECRPushRole` and obtain temporary AWS credentials.
 
 > **Important:** `id-token: write` only allows GitHub Actions to **request an OIDC token**. It does **not** grant permission to access or modify AWS resources. AWS access depends on the IAM role's **trust policy** (who can assume it) and **permissions policies** (what the assumed role can do).
 
@@ -4721,7 +5078,7 @@ Since `backend-ecr-push-job` does not check out the repository or require reposi
 
 - **`actions/download-artifact@v8`** downloads an artifact uploaded earlier in the workflow.
 - **`name: backend-container-image`** identifies the artifact. It must match the name used in the previous job's `actions/upload-artifact` step.
-- **`path: .`** downloads the artifact into the current working directory, which is the job's workspace because we have not changed directories.
+- **`path: .`** specifies the destination directory for the downloaded artifact. The dot (`.`) represents the current working directory, which resolves to the job's workspace (`${{ github.workspace }}` or `$GITHUB_WORKSPACE`) by default. Therefore, the Docker archive is extracted directly into the job's workspace.
 
 Each job normally runs on a **separate runner with its own workspace**. Uploading an artifact in one job does not automatically make it available in another, so we use this step to transfer the Docker archive.
 
@@ -4734,24 +5091,26 @@ The next step loads this archive into Docker so the image can be tagged for Amaz
 ---
 
 ```yaml
-# Load the exact Docker image produced and scanned by the previous job.
+# Load the exact Docker image built and scanned by the previous job.
 - name: Load backend container image
   run: docker load -i cwvj-mega-backend.tar
 ```
 
-- **`docker load`** imports the Docker image archive into the runner's local Docker image store.
-- **`-i cwvj-mega-backend.tar`** specifies the archive created by the previous job's `docker save` command.
 - **`name`** identifies the step in the GitHub Actions workflow logs.
+- **`docker load`** imports a Docker image archive into the runner's local Docker image store.
+- **`--input` (`-i`)** specifies the archive created by the previous job's `docker save` command.
 
-After loading, the image is available locally with its **original repository name and tag**. For example:
+After loading, the image is available locally with its **original repository name and tag**, for example:
 
 `cwvj-mega-backend:0.0.1-SNAPSHOT-8048730`
 
 We can now tag and push this image to Amazon ECR **without rebuilding it**.
 
-The flow is: **Scanned Image → `docker save` → GitHub Actions Artifact → `docker load` → Local Docker Image**
+**Image transfer flow:**
 
-> **Production Insight:** Transferring the image archive between jobs supports a **build once, scan, and promote the same artifact** approach. We can publish and promote the image across environments without rebuilding it for each environment.
+**Scanned Image → `docker save` → GitHub Actions Artifact → `docker load` → Local Docker Image**
+
+> **Production Insight:** This follows the **build once, scan, and promote the same artifact** approach. We publish the already-built and scanned image, avoiding separate builds for different environments and ensuring that the image we deploy is the same image that was scanned.
 
 ---
 
@@ -4872,8 +5231,10 @@ The application version identifies the release, while the short commit SHA ident
 
 ---
 
+### Push the Backend Image to Amazon ECR
+
 ```yaml
-# Push the exact image that was built and scanned earlier.
+# Push the exact image built and scanned by the previous job.
 - name: Push backend image to Amazon ECR
   env:
     IMAGE_TAG: ${{ needs.backend-image-build-scan-job.outputs.image-tag }}
@@ -4884,29 +5245,31 @@ The application version identifies the release, while the short commit SHA ident
       "${ECR_REGISTRY}/cwvj-mega-backend:${IMAGE_TAG}"
 ```
 
-- **`IMAGE_TAG`** retrieves the image tag from the upstream `backend-image-build-scan-job` Job Output, preserving the tag generated during the original build.
+- **`IMAGE_TAG`** retrieves the **Job Output** from `backend-image-build-scan-job`. This passes the tag generated during the original build to the publishing job, ensuring we use the same tag rather than generating it again.
 - **`ECR_REGISTRY`** constructs the ECR registry endpoint using our AWS account ID and region.
-- **`docker push`** uploads the image's required layers and publishes its manifest to the specified ECR repository.
-- **The image reference** identifies the destination registry, repository, and tag.
+- **`docker push`** uploads the image layers (when required) and publishes the image manifest to the specified ECR repository.
+- **Image reference:** Identifies the destination registry, repository, and image tag.
 
 For example, Docker pushes:
 
 `497613475050.dkr.ecr.ap-south-1.amazonaws.com/cwvj-mega-backend:0.0.1-SNAPSHOT-8048730`
 
-For this operation to succeed:
+> **How do we ensure it is the same image?** The previous job uses `docker save` to package the built and scanned image into an artifact. This job downloads that artifact and uses `docker load` to restore the image, including its original tag. The **artifact carries the actual image**, while the **Job Output carries the tag generated during the build**. Together, they ensure that we push the previously built and scanned image using its original tag, without rebuilding it.
+
+**For this operation to succeed:**
 - Docker must be authenticated to the correct ECR registry.
 - The IAM role must have the required ECR upload permissions for `cwvj-mega-backend`.
 - The repository must exist in the specified AWS account and region.
 
 We configured the repository and IAM permissions during the earlier Stage 8 setup.
 
-> **Important:** Both ECR repositories use **Image tag mutability set to Immutable**. An existing tag cannot be overwritten with a different image.
+> **Important – Immutable Image Tags:** Both ECR repositories use **Image Tag Mutability: Immutable**. An existing tag cannot be overwritten with a different image.
+>
+> Since our tags combine the application version and short Git commit SHA, different commits will normally produce different tags. However, rerunning the workflow for the same commit generates the same tag. If that tag already exists in ECR, the push will fail rather than overwrite the existing image.
+>
+> For safe retries, we can check whether the tag already exists and verify that its **image digest matches the expected image** before treating the operation as successful. We should not simply ignore the error or weaken tag immutability.
 
-Because our tags combine the application version and short Git commit SHA, different commits will normally produce different tags. Rerunning the workflow for the same commit produces the same tag. If that tag already exists in ECR, the push will fail rather than overwrite the existing image.
-
-This behavior is intentional. If we need to support safe retries, we can handle an already-published tag explicitly and verify the existing image instead of weakening tag immutability.
-
-> **Production Insight:** Immutable tags prevent accidental tag replacement, but **the image digest is the stronger identifier for exact image content**. In our deployment and promotion stages, we should capture the ECR image digest and use it to deploy the same image across environments.
+> **Production Insight:** Immutable tags help prevent accidental image replacement, but the **image digest is the stronger identifier of exact image content**. In our deployment and promotion stages, we capture the ECR image digest and use it to deploy the same image across environments.
 
 ---
 
@@ -4947,10 +5310,12 @@ Add the following steps **immediately after the Trivy image scan step**, so the 
 ```yaml
 # Save the exact image that passed the security scan as a Docker archive.
 - name: Save frontend container image
+  env:
+    IMAGE_TAG: ${{ steps.image-tag.outputs.image_tag }}
   run: |
     docker save \
       -o cwvj-mega-frontend.tar \
-      cwvj-mega-frontend:${{ steps.image-tag.outputs.image_tag }}
+      "cwvj-mega-frontend:${IMAGE_TAG}"
 
 # Upload the exact scanned image so a later job can use the same image.
 - name: Upload frontend container image
@@ -4974,7 +5339,7 @@ Add the following new job at the same level as `frontend-job` and `frontend-imag
     name: Push Frontend Image to Amazon ECR
     runs-on: ubuntu-26.04
     needs: frontend-image-build-scan-job
-    if: github.event_name != 'pull_request'
+    if: github.event_name == 'push'
 
     permissions:
       id-token: write
@@ -5106,6 +5471,12 @@ Once the workflow succeeds, navigate to **Amazon ECR → Private registry → Re
 | Push timestamp | Check the latest image | Check the latest image |
 
 For example, the backend tag might be `0.0.1-SNAPSHOT-8048730`, while the frontend tag might be `0.1.0-8048730`. These are examples only. Verify the actual tags generated by your workflow run.
+
+> **Note:** Alongside the tagged **Image Index**, you may see two additional entries in ECR:
+> - **Image Manifest:** Represents the actual container image, including its configuration and references to image layers required to run the application.
+> - **Provenance Attestation:** Contains build metadata generated by Docker Buildx, providing information about how the image was built and supporting software supply-chain traceability.
+>
+> These are expected when Buildx generates provenance attestations by default. They are not duplicate application images or additional releases.
 
 You can also inspect both repositories using the AWS CLI, provided your local AWS CLI has suitable permissions.
 
@@ -5318,14 +5689,14 @@ Create another IAM role named **`CWVJGitHubActionsEKSDeployProdRole`** and confi
 - Open your GitHub repository and navigate to **Settings → Actions → OIDC** to inspect your OIDC configuration and subject details.
 - Replace `CloudWithVarJosh`, `146525273`, and `mega-project-demo@1386577280` with the corresponding owner name, owner ID, repository name, and repository ID for your repository.
 - Replace AWS account ID `497613475050` in each `Federated` ARN with your own AWS account ID. Ensure the corresponding GitHub OIDC identity provider exists in IAM.
-- Keep the audience value as `sts.amazonaws.com` when using the standard AWS STS audience.
+- Keep the audience value as `sts.amazonaws.com` when using the standard Amazon STS audience.
 - Use the exact subject format shown by your repository's OIDC configuration. The examples use GitHub's immutable subject format, which includes the owner and repository IDs.
 
 > **Important:** Both examples use **environment-based OIDC subjects** because our deployment jobs declare `environment: dev` or `environment: prod`. Consequently, each role trusts its corresponding environment rather than a list of branch-based subjects.
 
 **Understand the two trust conditions:**
 
-- **Audience (`aud`):** `sts.amazonaws.com` identifies AWS STS as the intended audience of the OIDC token.
+- **Audience (`aud`):** `sts.amazonaws.com` identifies Amazon STS as the intended audience of the OIDC token.
 - **Subject (`sub`):** Restricts which GitHub repository and environment identity can assume the role. The DEV role permits the `dev` environment subject, while the PROD role permits the `prod` environment subject.
 
 > **Production Insight:** An environment-based trust policy does not, by itself, restrict which branches can deploy. Configure **GitHub Environment protection rules and deployment branch restrictions** for `dev` and `prod`. This allows the DEV environment to accept the intended feature, bugfix, and hotfix branches while applying stricter controls to production deployments.
@@ -5395,7 +5766,6 @@ Our cluster uses **`API_AND_CONFIG_MAP`**, which supports both EKS access entrie
 
 > **Important:** The supported methods depend on the authentication mode:
 > - **`API`:** Uses EKS access entries.
-> - **`CONFIG_MAP`:** Uses the `aws-auth` ConfigMap.
 > - **`API_AND_CONFIG_MAP`:** Supports both methods.
 >
 > Changing the authentication mode is a cluster-level change. Once the EKS access-entry API is enabled, you cannot switch back to a mode that disables it. Since our cluster already supports access entries, **no authentication-mode change is required**.
@@ -5435,6 +5805,84 @@ We use **separate Kubernetes groups** so that the DEV role can be granted permis
 > **Important:** Creating an access entry maps an IAM role to a Kubernetes group, but **does not grant Kubernetes permissions by itself**. The group names must match exactly in the corresponding RBAC configuration.
 
 At the end of this task, EKS will have separate access entries for `CWVJGitHubActionsEKSDeployDevRole` and `CWVJGitHubActionsEKSDeployProdRole`. We have established the identity mappings, but we still need to configure and validate their Kubernetes permissions before using them for deployments.
+
+---
+
+### Task 3: Prepare the Kubernetes DEV and PROD Environments
+
+Before deploying the application, we need to create the **DEV and PROD namespaces** and configure namespace-scoped RBAC for both deployment roles.
+
+---
+
+#### Configure Namespaces and RBAC
+
+Run the following commands from the `project-files` directory using an appropriately privileged Kubernetes identity.
+
+```bash
+# 1. Create the DEV and PROD namespaces.
+kubectl create namespace dev
+kubectl create namespace prod
+
+# 2. Apply RBAC for both environments.
+kubectl apply -f kubernetes/deployer-rbac.yaml
+
+# 3. Verify the namespaces and RBAC resources.
+kubectl get namespaces dev prod
+kubectl get clusterroles cwvj-github-actions-deployer-cluster-role
+kubectl get rolebindings -n dev
+kubectl get rolebindings -n prod
+```
+
+The `kubernetes/deployer-rbac.yaml` file defines a **ClusterRole** containing the permissions required by our GitHub Actions deployment workflows, along with separate **RoleBindings** for `dev` and `prod`.
+
+Kubernetes supports both **Roles** and **ClusterRoles** for defining permissions. A Role is namespace-scoped, whereas a ClusterRole can define a reusable set of permissions that can be bound at either namespace or cluster scope. We use a **single ClusterRole with two RoleBindings** because both environments require the same permissions. This avoids duplicating the RBAC rules while keeping DEV and PROD access isolated.
+
+> **Important:** Although a ClusterRole defines reusable permissions, referencing it through a **RoleBinding** restricts those permissions to the namespace in which the RoleBinding exists. We deliberately use separate RoleBindings so the DEV deployment identity can manage resources in `dev`, while the PROD deployment identity can manage resources in `prod`.
+
+Apply this RBAC configuration manually using an appropriately privileged identity. The application manifests under `kubernetes/dev/` and `kubernetes/prod/` will be applied by their respective GitHub Actions deployment workflows.
+
+---
+
+#### Validate RBAC Permissions
+
+Use `kubectl auth can-i` to verify that each deployment group has the intended permissions within its own namespace and cannot deploy across environments.
+
+```bash
+# 1. Verify that the DEV deployment group can create deployments in DEV.
+kubectl auth can-i create deployments \
+  --as=github-actions-deployer-dev-test \
+  --as-group=cwvj-github-actions-deployer-dev -n dev
+
+# 2. Verify that the PROD deployment group can create deployments in PROD.
+kubectl auth can-i create deployments \
+  --as=github-actions-deployer-prod-test \
+  --as-group=cwvj-github-actions-deployer-prod -n prod
+
+# 3. Verify that the DEV deployment group cannot create deployments in PROD.
+kubectl auth can-i create deployments \
+  --as=github-actions-deployer-dev-test \
+  --as-group=cwvj-github-actions-deployer-dev -n prod
+
+# 4. Verify that the PROD deployment group cannot create deployments in DEV.
+kubectl auth can-i create deployments \
+  --as=github-actions-deployer-prod-test \
+  --as-group=cwvj-github-actions-deployer-prod -n dev
+```
+
+**Expected results:**
+
+- **Checks 1 and 2** return `yes`, confirming that each deployment group can create deployments in its designated namespace.
+- **Checks 3 and 4** return `no`, confirming that neither deployment group can deploy into the other environment.
+
+> **Important:** We use `--as` and `--as-group` to **simulate the respective deployment identities**. The Kubernetes identity executing these commands must have permission to **impersonate** the specified users and groups.
+
+> **Note:** Our **ClusterRole deliberately does not grant permissions to create or modify Kubernetes Secrets**. This keeps database credentials outside the deployment role's permissions. We are keeping the validation focused on **namespace isolation** rather than testing every individual RBAC rule.
+
+> **Production Insight:** Kubernetes RBAC permissions are **additive**. A RoleBinding restricts the permissions it grants to its namespace, but another binding could grant the same identity additional access. Always consider an identity's **effective permissions**, not just one RoleBinding.
+
+> **Important – Cluster Creator Administrator Access:** Amazon EKS automatically grants **Kubernetes cluster-admin permissions** to the IAM principal (user or role) that creates the cluster. This is enabled by default through `bootstrapClusterCreatorAdminPermissions`. In our case, I created the cluster using my IAM user, `varun.joshi`, so this identity has administrator access to the Kubernetes cluster. This is an **EKS bootstrap behavior**, not an IAM `AdministratorAccess` permission.
+>
+> You can identify the AWS principal currently being used by running `Amazon STS get-caller-identity`. The current Kubernetes context and its configured user entry can be viewed using `kubectl config get-contexts`. In the AWS Console, you can inspect the creator's access under **EKS → Clusters → <your-cluster> → Access → Access entries**, provided the cluster uses an authentication mode that supports access entries.
 
 ---
 
@@ -5552,91 +6000,25 @@ Our backend running on EKS needs to connect to PostgreSQL on RDS. We will update
 
 > **Production Insight:** Use **security-group references** instead of broad CIDR ranges to restrict database access to the intended infrastructure. Never expose PostgreSQL to `0.0.0.0/0`.
 
-> **Production Insight – Security Groups for Pods:** Amazon EKS also supports **Security Groups for Pods**, which allow us to associate dedicated security groups with selected Pods instead of relying entirely on the security groups attached to worker nodes. We could have used this feature to associate a dedicated security group with our backend Pods and reference that security group in the RDS inbound rule. This would provide **finer-grained network isolation**, ensuring that only the intended workloads have network-level access to the database.
+> **Production Insight – Security Groups for Pods:** Our demo EKS cluster currently hosts only this application, and our node group is used for its workloads. Therefore, using the **EKS node security group** to allow connectivity to RDS is a reasonable and straightforward approach for this project.
 >
-> In our current approach, because the RDS inbound rule references the **EKS node security group**, any Pod whose network traffic uses that security group can establish network connectivity to RDS on port `5432`. However, this does not automatically grant database access. Our PostgreSQL databases are **password-protected**, and the database credentials are supplied to the **backend workload** through its Kubernetes Secret. This provides an additional layer of **database-level authentication and access control**, even though we don't have Pod-level network isolation.
+> In a production environment, however, an EKS cluster can host **dozens or even hundreds of applications**, depending on the architecture and scale. Multiple applications may share the same node group to optimize compute utilization, while applications with specific resource requirements, operational boundaries, or isolation needs may be scheduled onto dedicated node groups. Critical or sensitive workloads, for example, may have their own dedicated node groups.
+>
+> This distinction is important because, by default, Pods use the security groups associated with the worker node's network interface. Consequently, when the RDS inbound rule references the **EKS node security group**, other Pods using that security group may also have network-level connectivity to RDS, not just our backend Pods.
+>
+> Amazon EKS also supports **Security Groups for Pods**, which allow us to associate dedicated security groups with selected Pods rather than relying entirely on the security groups attached to worker nodes. We could use this feature to associate a dedicated security group with our backend Pods and reference that security group in the RDS inbound rule. This provides **finer-grained network isolation**, ensuring that only the intended workloads have network-level access to the database, even when multiple applications share the same node group.
+>
+> In our current approach, network connectivity to RDS does not automatically grant database access. Our PostgreSQL databases are **password-protected**, and the database credentials are supplied to the **backend workload** through its Kubernetes Secret. This provides an additional layer of **database-level authentication and access control**, even though we don't have Pod-level network isolation.
 >
 > **Note:** Kubernetes Secrets must also be protected through appropriate RBAC and workload-creation restrictions. A principal with permission to create Pods in a namespace can potentially create a Pod that references Secrets in that namespace.
 >
-> For this project, we've deliberately chosen the **node security group approach** to keep the infrastructure setup straightforward and maintain our primary focus on GitHub Actions. It remains a reasonable approach when workloads sharing the node security group are within the same intended network trust boundary. **Security Groups for Pods** would be a further enhancement when finer-grained network isolation is required.
+> For this project, we've deliberately chosen the **node security group approach** to keep the infrastructure setup straightforward and maintain our primary focus on GitHub Actions. It remains a reasonable approach when workloads sharing the node security group are within the same intended network trust boundary. **Security Groups for Pods** would be a further enhancement worth exploring for production environments where finer-grained network isolation is required.
 
 ---
 
-### Task 3: Prepare the Kubernetes DEV and PROD Environments
+### Task 3: Create Database Secrets for DEV and PROD
 
-Before deploying the application, we need to create the **DEV and PROD namespaces**, configure namespace-scoped RBAC for both deployment roles, and create the database Secrets required by each environment.
-
----
-
-#### Configure Namespaces and RBAC
-
-Run the following commands from the `project-files` directory using an appropriately privileged Kubernetes identity.
-
-```bash
-# 1. Create the DEV and PROD namespaces.
-kubectl create namespace dev
-kubectl create namespace prod
-
-# 2. Apply RBAC for both environments.
-kubectl apply -f kubernetes/deployer-rbac.yaml
-
-# 3. Verify the namespaces and RBAC resources.
-kubectl get namespaces dev prod
-kubectl get clusterroles cwvj-github-actions-deployer-cluster-role
-kubectl get rolebindings -n dev
-kubectl get rolebindings -n prod
-```
-
-The `kubernetes/deployer-rbac.yaml` file defines a **ClusterRole** containing the permissions required by our GitHub Actions deployment workflows, along with separate **RoleBindings** for `dev` and `prod`.
-
-Kubernetes supports both **Roles** and **ClusterRoles** for defining permissions. A Role is namespace-scoped, whereas a ClusterRole can define a reusable set of permissions that can be bound at either namespace or cluster scope. We use a **single ClusterRole with two RoleBindings** because both environments require the same permissions. This avoids duplicating the RBAC rules while keeping DEV and PROD access isolated.
-
-> **Important:** Although a ClusterRole defines reusable permissions, referencing it through a **RoleBinding** restricts those permissions to the namespace in which the RoleBinding exists. We deliberately use separate RoleBindings so the DEV deployment identity can manage resources in `dev`, while the PROD deployment identity can manage resources in `prod`.
-
-Apply this RBAC configuration manually using an appropriately privileged identity. The application manifests under `kubernetes/dev/` and `kubernetes/prod/` will be applied by their respective GitHub Actions deployment workflows.
-
----
-
-#### Validate RBAC Permissions
-
-Use `kubectl auth can-i` to verify that each deployment group has the intended permissions within its own namespace and cannot deploy across environments.
-
-```bash
-# 1. Verify that the DEV deployment group can create deployments in DEV.
-kubectl auth can-i create deployments \
-  --as=github-actions-deployer-dev-test \
-  --as-group=cwvj-github-actions-deployer-dev -n dev
-
-# 2. Verify that the PROD deployment group can create deployments in PROD.
-kubectl auth can-i create deployments \
-  --as=github-actions-deployer-prod-test \
-  --as-group=cwvj-github-actions-deployer-prod -n prod
-
-# 3. Verify that the DEV deployment group cannot create deployments in PROD.
-kubectl auth can-i create deployments \
-  --as=github-actions-deployer-dev-test \
-  --as-group=cwvj-github-actions-deployer-dev -n prod
-
-# 4. Verify that the PROD deployment group cannot create deployments in DEV.
-kubectl auth can-i create deployments \
-  --as=github-actions-deployer-prod-test \
-  --as-group=cwvj-github-actions-deployer-prod -n dev
-```
-
-**Expected results:**
-
-- **Checks 1 and 2** return `yes`, confirming that each deployment group can create deployments in its designated namespace.
-- **Checks 3 and 4** return `no`, confirming that neither deployment group can deploy into the other environment.
-
-> **Important:** We use `--as` and `--as-group` to **simulate the respective deployment identities**. The Kubernetes identity executing these commands must have permission to **impersonate** the specified users and groups.
-
-> **Note:** Our **ClusterRole deliberately does not grant permissions to create or modify Kubernetes Secrets**. This keeps database credentials outside the deployment role's permissions. We are keeping the validation focused on **namespace isolation** rather than testing every individual RBAC rule.
-
-> **Production Insight:** Kubernetes RBAC permissions are **additive**. A RoleBinding restricts the permissions it grants to its namespace, but another binding could grant the same identity additional access. Always consider an identity's **effective permissions**, not just one RoleBinding.
-
-> **Important – Cluster Creator Administrator Access:** Amazon EKS automatically grants **Kubernetes cluster-admin permissions** to the IAM principal (user or role) that creates the cluster. This is enabled by default through `bootstrapClusterCreatorAdminPermissions`. In our case, I created the cluster using my IAM user, `varun.joshi`, so this identity has administrator access to the Kubernetes cluster. This is an **EKS bootstrap behavior**, not an IAM `AdministratorAccess` permission.
->
-> You can identify the AWS principal currently being used by running `aws sts get-caller-identity`. The current Kubernetes context and its configured user entry can be viewed using `kubectl config get-contexts`. In the AWS Console, you can inspect the creator's access under **EKS → Clusters → <your-cluster> → Access → Access entries**, provided the cluster uses an authentication mode that supports access entries.
+Before deploying the application, we need to create the **Kubernetes Secrets** containing the database credentials required by the DEV and PROD environments.
 
 ---
 
@@ -5645,11 +6027,11 @@ kubectl auth can-i create deployments \
 The `project-files` root contains `dev-backend-db-secret.yaml` and `prod-backend-db-secret.yaml`. Open each file and replace `PASSWORD-HERE` with the password configured for its respective RDS application user.
 
 ```bash
-# 9. Apply the DEV and PROD database Secrets.
+# Apply the DEV and PROD database Secrets.
 kubectl apply -f dev-backend-db-secret.yaml
 kubectl apply -f prod-backend-db-secret.yaml
 
-# 10. Verify that both Secrets exist.
+# Verify that both Secrets exist.
 kubectl get secret backend-db-secret -n dev
 kubectl get secret backend-db-secret -n prod
 ```
@@ -5688,7 +6070,573 @@ Reference: [Kubernetes documentation: Managing Secrets using kubectl](https://ku
 
 ---
 
-### Task 4: Create the Automated DEV Deployment Workflow
+### Task 4: Understand the Kubernetes DEV Manifests
+
+Before applying our Kubernetes manifests, let's understand what we're deploying and how the different resources fit together. We'll walk through the **backend.yaml** and **rds.yaml** files, explaining their important sections step by step. The objective isn't to teach Kubernetes YAML end to end, but to give you a good understanding of our application deployment architecture.
+
+Our Kubernetes directory has the following structure:
+
+```text
+kubernetes/
+├── dev/
+│   ├── backend.yaml
+│   ├── frontend.yaml
+│   └── rds.yaml
+├── prod/
+│   ├── backend.yaml
+│   ├── frontend.yaml
+│   └── rds.yaml
+└── deployer-rbac.yaml
+```
+---
+
+#### 1. Backend Deployment – `backend.yaml`
+
+Our backend manifest defines two Kubernetes resources: a **Deployment** and a **Service**. Let's understand the Deployment first.
+
+---
+
+**API Version, Resource Type and Metadata**
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cwvj-backend
+  namespace: dev
+  labels:
+    app.kubernetes.io/name: cwvj-mega-project
+    app.kubernetes.io/instance: cwvj-mega-project-dev
+    app.kubernetes.io/component: backend
+    app.kubernetes.io/part-of: cwvj-mega-project
+    app.kubernetes.io/managed-by: github-actions
+  annotations:
+    description: "Spring Boot backend API"
+```
+
+- **`apiVersion: apps/v1`** specifies the Kubernetes API version used to create this resource.
+- **`kind: Deployment`** tells Kubernetes that we're creating a Deployment resource.
+- **`metadata.name` and `namespace`** identify the Deployment. We're creating `cwvj-backend` in the `dev` namespace.
+- **`labels`** attach key-value metadata to the resource. We use these labels to identify the application, its environment, and its component. They also help us organize and select Kubernetes resources.
+- **`annotations`** attach additional descriptive metadata to the resource. Unlike labels, annotations are not used for selecting resources.
+
+> **Note:** You might have noticed that our labels use the `app.kubernetes.io/` prefix, for example, `app.kubernetes.io/name`. This is a **recommended Kubernetes naming convention for application-related labels and annotations**. It provides a consistent namespace for application metadata so that Kubernetes tools and other automation can interpret these labels consistently.
+>
+> Other prefixes you may encounter include:
+>
+> - **`kubernetes.io/`** and **`k8s.io/`**: Reserved for Kubernetes core components. For example, `kubernetes.io/arch` identifies a node's architecture, while `kubernetes.io/os` identifies its operating system.
+> - **`topology.kubernetes.io/`**: Used for topology-related labels, such as `topology.kubernetes.io/zone`, which we also use in our Deployment to distribute Pods across availability zones.
+> - **Organization-specific prefixes:** You can use your own DNS domain as a prefix for custom labels, for example, `example.com/team`. This helps avoid naming conflicts with Kubernetes and other tools.
+>
+> **Important:** The `kubernetes.io/` and `k8s.io/` namespaces are reserved. Do not use them for custom labels. You can also omit the prefix for labels that are private to your own use.
+>
+> Refer to the official Kubernetes documentation:
+> - [Recommended Labels](https://kubernetes.io/docs/concepts/overview/working-with-objects/common-labels/)
+> - [Well-Known Labels, Annotations and Taints](https://kubernetes.io/docs/reference/labels-annotations-taints/)
+> - [Labels and Selectors – Syntax and Character Set](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/)
+
+---
+
+**Deployment Specification and Pod Template**
+
+```yaml
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cwvj-mega-project
+      app.kubernetes.io/instance: cwvj-mega-project-dev
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cwvj-mega-project
+        app.kubernetes.io/instance: cwvj-mega-project-dev
+        app.kubernetes.io/component: backend
+        app.kubernetes.io/part-of: cwvj-mega-project
+      annotations:
+        description: "Spring Boot backend API"
+```
+
+- **`replicas: 2`** instructs Kubernetes to maintain two backend Pod replicas. If a Pod fails, the Deployment Controller attempts to create another Pod to maintain the desired replica count.
+- **`selector.matchLabels`** defines how the Deployment identifies the Pods it manages. These labels must match the corresponding labels defined under `template.metadata.labels`.
+- **`template`** defines the Pod specification that Kubernetes uses when creating backend Pods.
+- **`template.metadata.labels`** attaches labels to the Pods themselves. Notice that the labels used by the Deployment selector are also present here. We additionally use `app.kubernetes.io/part-of` to identify the larger application to which this component belongs.
+
+---
+
+**Pod-Level Security Context**
+
+```yaml
+spec:
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 10001
+    runAsGroup: 10001
+    seccompProfile:
+      type: RuntimeDefault
+```
+
+- **`securityContext`** defines security settings at the Pod level, which apply to its containers unless overridden at the container level.
+- **`runAsNonRoot: true`** ensures that containers do not run as the root user. `runAsUser: 10001` and `runAsGroup: 10001` specify the Linux user ID and primary group ID.
+- **`seccompProfile: RuntimeDefault`** applies the default seccomp (Secure Computing Mode) profile provided by the container runtime.
+  - **What is seccomp?** Seccomp is a Linux kernel security feature that filters the **system calls (syscalls)** a process can make to the kernel. System calls allow applications to request operations from the underlying operating system.
+  - **How is it different from Linux capabilities?** Both restrict what a process can do, but at different levels:
+    - **Linux capabilities (`capabilities.drop: ALL`)** remove specific privileges from a process, such as the ability to modify network settings or perform certain administrative operations.
+    - **Seccomp** restricts which system calls the process can make in the first place, regardless of the capabilities it holds.
+  - **Why `RuntimeDefault`?** Instead of defining our own custom syscall filter, we use the security profile maintained by the container runtime. It provides a sensible set of restrictions while allowing the system calls commonly required by containers. The exact restrictions can vary between container runtimes and their versions.
+  - **Together, capabilities and seccomp provide complementary security layers**, reducing the privileges available to the container and limiting its access to potentially dangerous system calls.
+
+> **Defense in Depth:** The Dockerfile specifies the default user for the image, while the Kubernetes `securityContext` independently enforces the **non-root user and group at runtime**. Since developers typically maintain Dockerfiles and DevOps teams maintain Kubernetes manifests, enforcing this in both places provides an additional layer of protection. **Even if the Dockerfile misses the non-root `USER` instruction, the Kubernetes manifest still enforces UID `10001` and GID `10001` and prevents the container from running as root.**
+
+---
+
+**Topology Spread Constraints**
+
+```yaml
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: topology.kubernetes.io/zone
+    whenUnsatisfiable: DoNotSchedule
+    labelSelector:
+      matchLabels:
+        app.kubernetes.io/name: cwvj-mega-project
+        app.kubernetes.io/instance: cwvj-mega-project-dev
+        app.kubernetes.io/component: backend
+```
+
+- **`topologySpreadConstraints`** helps distribute backend Pod replicas across different availability zones.
+- **`topologyKey: topology.kubernetes.io/zone`** tells the scheduler to consider availability zones when distributing Pods.
+- **`maxSkew: 1`** allows a maximum difference of one Pod between eligible zones. For example:
+
+  | Total Replicas | AZ-1 | AZ-2 | Difference |
+  |---:|---:|---:|---:|
+  | 2 | 1 | 1 | 0 |
+  | 3 | 2 | 1 | 1 |
+  | 5 | 3 | 2 | 1 |
+
+  **`whenUnsatisfiable: DoNotSchedule`** makes this a hard scheduling constraint. If Kubernetes cannot maintain the permitted distribution, the additional Pod remains unscheduled.
+
+- **`labelSelector`** identifies which Pods are considered when calculating the distribution. Here, we select Pods belonging to our backend component using the labels defined in the Deployment's Pod template.
+
+---
+
+**Init Container – Wait for PostgreSQL**
+
+Before starting the backend application, we use an init container to check whether PostgreSQL is reachable.
+
+```yaml
+initContainers:
+  - name: wait-for-postgres
+    image: busybox:1.37.0
+    imagePullPolicy: IfNotPresent
+    command:
+      - sh
+      - -c
+      - |
+        timeout=300
+        elapsed=0
+
+        until nc -z -w 2 cwvj-postgres 5432; do
+          if [ "$elapsed" -ge "$timeout" ]; then
+            echo "PostgreSQL endpoint did not become reachable within 300 seconds"
+            exit 1
+          fi
+
+          sleep 5
+          elapsed=$((elapsed + 5))
+        done
+
+        echo "PostgreSQL endpoint is reachable"
+```
+
+- **`initContainers`** defines containers that must complete successfully before the main application containers start. We use one init container to check whether PostgreSQL is reachable.
+- **`image: busybox:1.37.0`** uses a lightweight BusyBox image that provides the `nc` (netcat) utility required for our connectivity check.
+- **`command`** executes a shell script that repeatedly checks whether the `cwvj-postgres` endpoint is reachable on port `5432`.
+  - **`cwvj-postgres`** is the Kubernetes `ExternalName` Service defined in our `rds.yaml` manifest. It acts as a DNS alias pointing to our Amazon RDS PostgreSQL endpoint.
+  - **`nc -z -w 2`** attempts to establish a TCP connection to the PostgreSQL endpoint on port `5432`. This ensures the database endpoint is reachable before starting the backend container. **nc=Netcat**.
+  - The script retries every five seconds for up to **300 seconds**. If the connection cannot be established within that time, the init container exits with an error, preventing the backend container from starting.
+
+  > **Important:** This is only a **TCP connectivity check**. It does not verify database authentication or whether the specific database configured in `DB_URL` exists. For example, if the RDS instance is reachable but the required database hasn't been created, this check will still succeed, and the backend application may subsequently fail to establish its database connection.
+- The script retries at five-second intervals and uses a configured **300-second timeout**. If PostgreSQL remains unreachable, the script exits with an error, preventing the backend container from starting until the init container completes successfully.
+
+---
+
+**Init Container Security Context and Resources**
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+resources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    cpu: 100m
+    memory: 32Mi
+```
+
+- **`securityContext`** applies security restrictions specifically to the init container.
+  - **`runAsNonRoot: true`** ensures that the container does not run as the root user.
+  - **`runAsUser: 10001` and `runAsGroup: 10001`** specify the Linux user ID (UID) and primary group ID (GID) used by the container processes.
+  - **`allowPrivilegeEscalation: false`** prevents processes inside the container from gaining additional privileges, for example, through setuid or setgid executables.
+  - **`capabilities.drop: ALL`** removes all Linux capabilities from the container. Capabilities provide specific privileges that would otherwise generally be associated with the root user.
+  - **`seccompProfile: RuntimeDefault`** applies the default seccomp profile provided by the container runtime.
+    - **What is seccomp?** It is a Linux kernel security feature that filters the system calls (syscalls) a process can make to the kernel.
+    - **How is it different from capabilities?** Capabilities restrict specific privileged operations, whereas seccomp restricts which system calls a process can execute. Both provide complementary layers of security.
+- **`resources.requests`** specifies the CPU and memory resources requested by the init container. Kubernetes considers these values when determining whether a node has sufficient resources to schedule the Pod.
+  - **`cpu: 10m`** requests 10 millicores (0.01 CPU core).
+  - **`memory: 16Mi`** requests 16 Mebibytes of memory.
+- **`resources.limits`** defines the maximum CPU and memory the init container can consume.
+  - **`cpu: 100m`** limits the container to 100 millicores (0.1 CPU core). If it attempts to consume more, CPU usage is throttled.
+  - **`memory: 32Mi`** sets the maximum memory limit. If the container exceeds this limit, it can be terminated with an `OOMKilled` status.
+
+> **Note:** Init containers run **sequentially** and complete before the application containers start. Kubernetes therefore calculates the Pod's effective resource requirements by considering the **highest resource request among its init containers** and the **combined requests of its application containers**, rather than simply adding them together. In our case, the **backend container's resource requests are higher** than those of the init container.
+
+---
+
+**Backend Container**
+
+Once the init container completes successfully, Kubernetes starts our main backend container.
+
+```yaml
+containers:
+  - name: backend
+    image: __BACKEND_IMAGE__
+    imagePullPolicy: IfNotPresent
+    ports:
+      - name: http
+        containerPort: 8080
+        protocol: TCP
+```
+
+- **`name: backend`** assigns a name to the container within the Pod.
+- **`image`** specifies the container image to run. Our deployment workflow replaces `__BACKEND_IMAGE__` with the actual ECR image reference before applying the manifest.
+- **`imagePullPolicy: IfNotPresent`** instructs Kubernetes to pull the image only if it is not already available on the worker node.
+- **`ports`** declares the ports used by the container. We name port `8080` as `http` and specify TCP as the communication protocol. Other Kubernetes configurations, such as Services and health probes, can refer to this port by its name.
+
+---
+
+**Container Security Context**
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  seccompProfile:
+    type: RuntimeDefault
+```
+
+- **`securityContext`** defines security-related settings that control how the backend container runs.
+- **`runAsNonRoot: true`** ensures the container does not run as the root user. `runAsUser: 10001` and `runAsGroup: 10001` specify the Linux user ID and primary group ID.
+- **`allowPrivilegeEscalation: false`** prevents processes inside the container from gaining additional privileges.
+- **`capabilities.drop: ALL`** removes all Linux capabilities from the container, following the principle of least privilege.
+- **`seccompProfile: RuntimeDefault`** applies the default seccomp profile provided by the container runtime.
+
+---
+
+**Environment Variables and Database Connectivity**
+
+```yaml
+env:
+  - name: SERVER_PORT
+    value: "8080"
+  - name: DB_URL
+    value: "jdbc:postgresql://cwvj-postgres:5432/__DB_NAME__"
+  - name: DB_USER
+    valueFrom:
+      secretKeyRef:
+        name: backend-db-secret
+        key: username
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: backend-db-secret
+        key: password
+```
+
+- **`env`** defines the environment variables made available to the backend container.
+- **`SERVER_PORT`** specifies the port on which our Spring Boot application listens.
+- **`DB_URL`** defines the JDBC connection URL used by the application to connect to PostgreSQL. It uses the `cwvj-postgres` Kubernetes Service name and port `5432`, with `__DB_NAME__` replaced by the actual database name during deployment.
+- **`DB_USER` and `DB_PASSWORD`** retrieve the database credentials from the Kubernetes Secret named `backend-db-secret`. The `secretKeyRef` field specifies which Secret and key to retrieve the values from. This avoids hardcoding database credentials in our manifest.
+
+---
+
+**Resource Requests and Limits**
+
+```yaml
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 768Mi
+```
+
+- **`resources.requests`** specifies the minimum CPU and memory resources requested by the container. Kubernetes uses these values when scheduling the Pod onto a suitable node.
+- **`resources.limits`** defines the maximum CPU and memory the container can consume. CPU usage is throttled when it reaches its limit, while exceeding the memory limit can result in the container being terminated with an `OOMKilled` status.
+- In our configuration, the backend requests `100m` CPU and `256Mi` memory, with limits of `500m` CPU and `768Mi` memory.
+
+---
+
+**Startup, Liveness and Readiness Probes**
+
+```yaml
+startupProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: http
+  periodSeconds: 5
+  failureThreshold: 30
+
+livenessProbe:
+  httpGet:
+    path: /actuator/health/liveness
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 2
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /actuator/health/readiness
+    port: http
+  periodSeconds: 5
+  timeoutSeconds: 2
+  failureThreshold: 3
+```
+
+Kubernetes uses **health probes** to periodically check whether our application has started, is functioning correctly, and is ready to receive traffic. These checks are performed by the **kubelet** running on the worker node.
+
+We have configured all three types of probes:
+
+- **`startupProbe`** checks whether our Spring Boot application has successfully started.
+  - **`httpGet`** instructs Kubernetes to perform an HTTP GET request against the specified endpoint.
+  - **`path: /actuator/health/liveness`** uses the Spring Boot Actuator liveness endpoint to verify that the application has started successfully.
+  - **`periodSeconds: 5`** instructs Kubernetes to perform the check every five seconds.
+  - **`failureThreshold: 30`** allows up to 30 consecutive failed checks before considering the startup probe unsuccessful. This gives our application approximately **150 seconds (5 × 30)** to start successfully.
+  - Once the startup probe **succeeds**, Kubernetes begins executing the liveness and readiness probes. Until then, both remain inactive.
+
+- **`livenessProbe`** determines whether our application is still running and healthy.
+  - We use the same Actuator liveness endpoint (`/actuator/health/liveness`) to check whether the application is functioning.
+  - **`periodSeconds: 10`** instructs Kubernetes to perform the check every 10 seconds.
+  - **`timeoutSeconds: 2`** specifies how long Kubernetes waits for a response before considering the check failed.
+  - **`failureThreshold: 3`** allows three consecutive failed checks. If all three fail, Kubernetes considers the container unhealthy and **restarts it**.
+
+- **`readinessProbe`** determines whether our application is ready to receive traffic.
+  - **`path: /actuator/health/readiness`** uses the Spring Boot Actuator readiness endpoint to check whether the application is ready to serve requests.
+  - **`periodSeconds: 5`** instructs Kubernetes to perform the check every five seconds.
+  - **`timeoutSeconds: 2`** specifies how long Kubernetes waits for a response before considering the check failed.
+  - **`failureThreshold: 3`** allows three consecutive failed checks. If all three fail, Kubernetes marks the Pod as **NotReady** and removes it from the endpoints of Services that select it. This prevents traffic from being routed to an application that is not ready.
+  - Unlike a liveness probe, a failed readiness probe **does not restart the container**. Kubernetes continues checking it and makes the Pod available for traffic again once it becomes ready.
+
+- **Named port:** Notice that all three probes use `port: http`. This refers to the named container port `http` that we defined earlier, which maps to container port `8080`.
+
+> **Production Insight – Choosing the Right Health Probes:** In production Kubernetes environments, you'll commonly encounter liveness and readiness probes, while startup probes are generally used for applications that take longer to initialize. Choosing the right probe is important because **each probe serves a different purpose and triggers a different Kubernetes action**.
+>
+> - **Liveness Probe – Should the container be restarted?**
+>   - Use it to detect situations where an application becomes unresponsive or stuck, such as a deadlock, and restarting it can potentially recover the application.
+>   - If the liveness probe fails consecutively beyond the configured `failureThreshold`, Kubernetes terminates the container and restarts it according to the Pod's restart policy.
+>
+> - **Readiness Probe – Should the application receive traffic?**
+>   - Use it to determine whether the application is ready to serve requests. This is particularly useful during application initialization, temporary overload, or when a required dependency is unavailable.
+>   - If the readiness probe fails, Kubernetes marks the Pod as **NotReady** and removes it from the endpoints of Services that select it. **The container continues running and is not restarted.** Kubernetes keeps checking the probe and restores traffic when the application becomes ready again.
+>
+> - **Startup Probe – Has the application finished starting?**
+>   - Use it for **slow-starting applications** that require additional time to initialize, such as applications loading large datasets, performing migrations, or initializing caches.
+>   - While the startup probe is running, Kubernetes does not execute the liveness and readiness probes. Once it succeeds, the other probes take over. If it fails beyond the configured threshold, Kubernetes terminates the container and applies the Pod's restart policy.
+>
+> **Important:** Choosing the right **probe mechanism and health-check endpoint** is equally important. Kubernetes supports four probe mechanisms:
+>
+> | Probe Mechanism | How It Works | What It Checks |
+> |---|---|---|
+> | **HTTP GET** | Sends an HTTP GET request to a specified endpoint and checks the response status. | Whether the application responds successfully over HTTP. |
+> | **TCP Socket** | Attempts to establish a TCP connection to a specified port. | Whether the application is listening on that port. |
+> | **Exec** | Executes a specified command inside the container and checks its exit code. | Whether the command completes successfully (exit code `0`). |
+> | **gRPC** | Calls the standard gRPC health-checking service on a specified port. | Whether the application reports itself as healthy through gRPC. |
+>
+> Select the mechanism based on how your application exposes its health information and what you actually need to verify.
+>
+> **Example:** An application URL might respond successfully even when its database is unavailable. Therefore, a successful HTTP response does not necessarily mean the application can perform its business operations. The health-check endpoint must reflect the condition we're trying to verify.
+>
+> **Be particularly careful with liveness checks:** Do not make them dependent on external systems such as databases. If a shared database becomes unavailable, you don't want Kubernetes restarting all application instances unnecessarily. Whether database availability should affect readiness is a separate decision based on whether the application can meaningfully serve requests without it.
+>
+> The objective is to configure probes that **accurately reflect application health, avoid unnecessary restarts, and prevent traffic from reaching workloads that cannot serve requests**.
+
+---
+
+#### 2. Backend Service – `backend.yaml`
+
+Our backend manifest also defines a Service. While the Deployment manages our Pods, the Service provides a stable network endpoint through which other components can communicate with them.
+
+---
+
+**Backend Service Specification**
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: cwvj-backend
+  namespace: dev
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: cwvj-mega-project
+    app.kubernetes.io/instance: cwvj-mega-project-dev
+    app.kubernetes.io/component: backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+```
+
+- **`kind: Service`** tells Kubernetes that we're creating a Service resource named `cwvj-backend` in the `dev` namespace.
+- **`type: ClusterIP`** creates an internal Service endpoint that can be accessed from within the Kubernetes cluster. This is appropriate for our backend because it is intended to receive traffic from other application components rather than being directly exposed externally.
+- **`selector`** identifies the backend Pods that this Service should send traffic to. Notice that these labels match the labels defined in our backend Deployment's Pod template.
+- **`port: 8080`** is the port exposed by the Service, while **`targetPort: http`** forwards traffic to the container port named `http` (8080). Kubernetes automatically distributes traffic across the matching ready Pods.
+
+---
+
+#### 3. RDS Service – `rds.yaml`
+
+Our database is hosted on **Amazon RDS for PostgreSQL**, not inside the EKS cluster. We therefore use an `ExternalName` Service to provide an internal DNS alias for the RDS endpoint.
+
+**RDS Service Specification**
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: cwvj-postgres
+  namespace: dev
+spec:
+  type: ExternalName
+  externalName: cwvj-mega-postgres.c7m8gq4y4w13.ap-south-1.rds.amazonaws.com
+```
+
+- **`kind: Service`** creates a Kubernetes Service named `cwvj-postgres` in the `dev` namespace.
+- **`type: ExternalName`** configures the Service as a DNS alias for an external hostname.
+  - Kubernetes DNS returns a **CNAME record** that points to the external hostname.
+  - Unlike a `ClusterIP` Service, it does not create a virtual IP, select Pods, or proxy traffic. The connection is made directly to the external database endpoint after DNS resolution.
+- **`externalName`** specifies the actual Amazon RDS endpoint to which the alias points.
+- This allows our backend application to connect to PostgreSQL using `cwvj-postgres` rather than hardcoding the lengthy RDS endpoint in its database connection URL. The PostgreSQL port (`5432`) is specified separately in the application's JDBC URL.
+
+> **Production Insight – Decoupling Application Configuration from Infrastructure Endpoints:**
+>
+> One of the biggest advantages of using an `ExternalName` Service is that it **decouples our application configuration from the actual database endpoint**.
+>
+> Consider a scenario where we need to replace our existing RDS instance, restore a database into a new instance, or rename an existing instance. The new RDS instance may have a different endpoint. Without an abstraction, we would need to update the database endpoint in our application configuration and potentially rebuild or redeploy the application.
+>
+> With our current approach, the backend continues connecting through the same internal DNS name:
+>
+> `jdbc:postgresql://cwvj-postgres:5432/<DB_NAME>`
+>
+> We only need to **update the `externalName` field in `rds.yaml`** to point to the new RDS endpoint and apply the updated Service manifest. The backend application configuration and container image can remain unchanged.
+>
+> **Important:** This does not mean that existing database connections automatically migrate to the new instance. Applications must establish new connections, and DNS caching and connection-pool behavior must be considered during the transition.
+>
+> **Note:** A routine RDS Multi-AZ failover generally does not require changing the `ExternalName` Service. RDS retains the database endpoint and updates its DNS record to point to the new primary. The abstraction is particularly useful when the actual endpoint hostname changes, such as during an instance replacement or rename.
+>
+> Also, remember that `ExternalName` is a **DNS-level alias, not a network proxy**. If the application uses strict TLS hostname verification (for example, PostgreSQL JDBC `sslmode=verify-full`), the internal alias may not match the hostname in the RDS server certificate. This needs to be addressed when designing the database TLS configuration rather than simply disabling certificate verification.
+>
+> In our project, the DEV and PROD manifests currently define separate `ExternalName` Services, but both point to the same RDS endpoint. In a production environment, these could point to separate RDS instances or database endpoints depending on the required environment isolation.
+
+---
+
+#### 4. What About the Frontend and PROD Manifests?
+
+We won't repeat the same explanation for the remaining manifests because they follow essentially the same structure.
+
+- **Frontend (`frontend.yaml`):** Similar to the backend, it defines a Deployment and a Service. The Deployment runs two NGINX frontend replicas, while the Service uses `NodePort` to expose the frontend. In DEV, we use NodePort `30080`. The frontend does not require the database connectivity configuration or PostgreSQL init container used by the backend.
+- **PROD manifests:** Follow the same overall structure as DEV, with environment-specific namespaces, labels, and configuration. The frontend NodePort is `30081` in PROD, compared with `30080` in DEV. Both environments reference the same Amazon RDS endpoint in this project.
+
+> **Production Insight – Separating Cluster Administration from Application Deployment:**
+>
+> Earlier in this project, we manually created the **DEV and PROD namespaces**, configured **namespace-scoped RBAC**, and created the **database Secrets** required by each environment. These are foundational resources that must exist before our application manifests can be deployed.
+>
+> These resources could also be provisioned through automation, such as **Infrastructure as Code (IaC)** or a separate infrastructure/bootstrap workflow. However, in most existing enterprise environments, these resources are typically already provisioned and managed by the platform or Kubernetes administration teams. Application deployment pipelines are expected to consume these existing resources rather than manage the underlying cluster configuration.
+>
+> We've deliberately followed this architecture to demonstrate **separation of duties**:
+>
+> - **Platform / Kubernetes Administrators:** Own cluster administration and foundational resources, including namespaces, access configuration, RBAC, and database Secrets.
+> - **CI/CD Engineers:** Own application build and deployment workflows. Their IAM roles and Kubernetes permissions allow them to perform only the operations explicitly authorized by the administrators.
+>
+> In our implementation, the EKS access entry maps the GitHub Actions IAM role to a Kubernetes group, and the namespace-scoped RoleBinding associates that group with the permissions defined in the corresponding Role. This ensures that our deployment workflow can manage application resources within its authorized namespace without requiring **cluster-admin privileges**.
+>
+> **Important:** Kubernetes Secrets require particular care. Permission to create workloads in a namespace can potentially allow a principal to indirectly access Secrets in that namespace by referencing them in Pods. Therefore, Secret creation and access should be restricted to trusted identities, and deployment permissions should follow the **principle of least privilege**.
+>
+> There are multiple ways to structure these responsibilities depending on the organization's operating model. For this project, we've chosen to keep **infrastructure provisioning and application deployment separate**, which better reflects how many enterprise EKS environments are operated.
+
+---
+
+### Task 5: Configure GitHub Actions Variables for DEV Deployment
+
+Before configuring the DEV deployment workflow, we need to create GitHub repository and environment variables that identify our Amazon EKS cluster, database, and the IAM role that GitHub Actions will assume for deployment.
+
+**1. Create the repository-level variable**
+
+Navigate to **GitHub Repository → Settings → Secrets and variables → Actions → Variables** and create the following repository variable:
+
+| Variable Name | Value |
+|---|---|
+| `EKS_CLUSTER_NAME` | `cwvj-mega-demo-eks` |
+
+We keep this as a **repository-level variable** because our DEV and PROD workloads use the same EKS cluster.
+
+We can reference it in our workflows using the `vars` context:
+
+`${{ vars.EKS_CLUSTER_NAME }}`
+
+---
+
+**2. Create the DEV environment variables**
+
+Our DEV deployment workflow needs to know which database to connect to and which IAM role to assume. Since these values are specific to the DEV environment, we configure them as **environment-level variables**.
+
+Navigate to **GitHub Repository → Settings → Environments → dev → Environment variables** and create:
+
+| Variable Name | Value |
+|---|---|
+| `DB_NAME` | `cwvj_dev_db` |
+| `AWS_EKS_DEPLOY_ROLE_ARN` | `arn:aws:iam::497613475050:role/CWVJGitHubActionsEKSDeployDevRole` |
+
+Since our DEV deployment job references `environment: dev`, GitHub makes these environment variables available through the `vars` context.
+
+We can reference them using:
+
+- `${{ vars.DB_NAME }}`
+- `${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}`
+
+> **Note:** When configuring the PROD environment, we will create the same variable names under **Settings → Environments → prod**, but with production-specific values:
+>
+> | Variable Name | PROD Value |
+> |---|---|
+> | `DB_NAME` | `cwvj_prod_db` |
+> | `AWS_EKS_DEPLOY_ROLE_ARN` | `arn:aws:iam::497613475050:role/CWVJGitHubActionsEKSDeployProdRole` |
+>
+> This allows both deployment workflows to use the same variable references. GitHub supplies the appropriate values based on the environment declared by each job.
+
+> **Important:** Ensure that the deployment jobs declare the correct environment (`dev` or `prod`). Environment-level variables become available through the `vars` context after the job declares its environment. These are **configuration variables, not secrets**. Replace the example AWS account ID with your own.
+
+---
+
+### Task 6: Create the Automated DEV Deployment Workflow
 
 In this task, we will create `.github/workflows/02-deploy-dev.yaml` to deploy our application to DEV automatically after successful completion of the CI workflow.
 
@@ -5756,7 +6704,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN_DEV }}
+          role-to-assume: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Find the published image digests
@@ -5873,7 +6821,23 @@ concurrency:
 - **`group: cwvj-deploy-dev`:** Assigns all DEV deployment runs to the same concurrency group, ensuring they are subject to the same concurrency controls.
 - **`cancel-in-progress: false`:** Prevents a new deployment run from cancelling an already running deployment. This is important because interrupting a deployment midway could leave the environment in an unexpected state.
 
-> **Important:** A workflow triggered by `workflow_run` must exist on the repository's **default branch** for the event to trigger it. We addressed this prerequisite during our initial workflow setup.
+> **Important – `workflow_run` and the Default Branch:** In our project, `CWVJ CI | Build, Scan and Publish` is the **upstream workflow**, while `CWVJ Deploy | DEV` is the **downstream workflow** triggered through `workflow_run`.
+>
+> GitHub requires the downstream workflow (`02-deploy-dev.yaml`) to exist on the repository's **default branch (`main`)** for the `workflow_run` event to trigger it.
+>
+> **Our Current Situation:** At this stage, `main` contains only an incomplete version of our CI workflow (`01-ci.yaml`). Our completed CI and DEV deployment workflows are still being developed on the feature branch. Since `02-deploy-dev.yaml` does not yet exist on `main`, **the DEV deployment workflow will not be triggered**, even when our upstream CI workflow completes successfully. We will observe this during our demonstration.
+>
+> **Our Project Plan:** Once we have completed all the workflows, we will temporarily disable branch protection on `main` and push the completed workflows and project changes directly to it. We will then re-enable branch protection. This ensures that the latest workflow definitions and their dependencies are available on the default branch.
+>
+> After this bootstrap, we can trigger a new CI run from an eligible feature branch to demonstrate the complete CI-to-DEV deployment flow.
+>
+> **Which workflow version does GitHub execute?** For a `workflow_run` event, GitHub uses the downstream workflow definition associated with the default-branch commit selected for that run. The event's `GITHUB_SHA` represents the **latest commit on the default branch**, while `GITHUB_REF` points to the default branch.
+>
+> We use `github.event.workflow_run.head_sha` in the downstream workflow to check out the exact commit that triggered the upstream CI run. This means:
+> - **Workflow definition:** From the default-branch commit associated with the downstream run.
+> - **Application code and deployment manifests:** From the exact upstream CI commit on the feature branch.
+>
+> **Note:** Any local reusable workflows referenced by the downstream workflow must also exist in the same commit as the calling workflow on the default branch.
 
 > **Production Insight:** With `cancel-in-progress: false`, an active deployment is allowed to finish before another run starts. However, GitHub's default concurrency behaviour permits only **one running and one pending run** in a concurrency group. If another run becomes pending, a newer pending run can replace it. Consider this when deciding whether every deployment request must be processed.
 
@@ -5929,6 +6893,7 @@ jobs:
 - **`environment: dev`:** Associates the job with the DEV GitHub Environment, making its **environment-specific variables and secrets** available and enforcing any configured protection rules.
 - **`if`:** Defines the conditions that must be satisfied before the job can execute. The `>-` YAML indicator folds the multiline condition into a single expression.
   - **`conclusion == 'success'`:** Ensures deployment starts only when the triggering CI workflow completes successfully. The `workflow_run` activity type `completed` also fires when CI fails or is cancelled, so this check is essential.
+    > **Note:** The properties available after `github.event` depend on the event configured under the `on` keyword. To identify the available properties, first refer to GitHub's [Triggering a workflow](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#viewing-all-properties-of-an-event) documentation, specifically the **Viewing all properties of an event** section. From there, navigate to the [Webhook events and payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads) documentation and explore the payload structure of the relevant event. You can also inspect the actual payload by printing `toJSON(github.event)` in a workflow step.
 
 ---
 
@@ -5943,7 +6908,7 @@ permissions:
 
   > **Note:** In our earlier workflows, we didn't explicitly specify `contents: read` because GitHub applied the **default `GITHUB_TOKEN` permissions** configured for our repository. Those defaults already allowed repository checkout. However, once we explicitly define a `permissions` block, **any permission not listed is set to `none`**. Therefore, we must now explicitly include `contents: read`.
 
-- **`id-token: write`:** Allows GitHub Actions to **request an OIDC token (JWT)** from GitHub's OIDC provider. The AWS Credentials action uses this token to authenticate with AWS STS and assume the DEV deployment IAM role created in Stage 10.
+- **`id-token: write`:** Allows GitHub Actions to **request an OIDC token (JWT)** from GitHub's OIDC provider. The AWS Credentials action uses this token to authenticate with Amazon STS and assume the DEV deployment IAM role created in Stage 10.
 
 > **Important:** These two permissions serve different purposes. `contents: read` controls what the **GITHUB_TOKEN can access within GitHub**, whereas `id-token: write` allows the job to **request a separate OIDC token for external authentication**. It does not grant write access to GitHub repository resources or AWS resources by itself. AWS access depends on the IAM role's **trust policy** and the **permissions policies** attached to that role.
 
@@ -5959,13 +6924,22 @@ permissions:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
-          role-to-assume: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN_DEV }}
+          role-to-assume: ${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 ```
 
 - **`name: Check out deployment manifests`** gives the step a descriptive name in the workflow execution logs.
 - **`uses: actions/checkout@v7`** invokes the Checkout action to retrieve the repository contents onto the runner. We need this because the deployment workflow must access the Kubernetes manifests stored in our repository.
-- **`ref: ${{ github.event.workflow_run.head_sha }}`** explicitly checks out the **exact commit SHA** associated with the completed CI run. This is important because, unlike a push-triggered workflow, a `workflow_run` workflow defaults to checking out the repository's **default branch** if no `ref` is specified. We use `head_sha` to ensure that deployment uses the Kubernetes manifests from the **same source revision** whose application images passed CI, even if the development branch has advanced in the meantime.
+- **`ref: ${{ github.event.workflow_run.head_sha }}`** explicitly checks out the **exact commit SHA associated with the completed upstream CI run**. This is important because, unlike a push-triggered workflow, a `workflow_run` workflow defaults to the repository's **default branch** if no `ref` is specified. We use `head_sha` to ensure that deployment uses the Kubernetes manifests from the **same source revision** that was tested by the CI run, even if the development branch has advanced in the meantime.
+
+  > **Note:** For workflows triggered by the `workflow_run` event, GitHub sets the default branch as the workflow's reference:
+  >
+  > - **`GITHUB_SHA`:** Points to the last commit on the repository's default branch.
+  > - **`GITHUB_REF`:** Points to the repository's default branch.
+  >
+  > This is why we explicitly use `github.event.workflow_run.head_sha` in `actions/checkout` rather than relying on the default checkout behaviour. This ensures that we retrieve the **exact source commit associated with the upstream CI run**, rather than the version currently available on the default branch.
+  >
+  > **Note:** We could also use `github.event.workflow_run.head_branch` to check out the source branch. However, this would resolve to the commit currently pointed to by that branch when the checkout takes place. If additional commits have been pushed since the upstream CI run, we could end up checking out a newer commit that was not tested by that run. Using `head_sha` ensures **commit-level consistency between CI and deployment**.
 
   > **Note:** How do we know which properties are available after `github.event`? These properties depend on the **event that triggered the workflow**. Since we're using `workflow_run`, we refer to its corresponding webhook payload documentation to identify the available fields.
 
@@ -5978,8 +6952,8 @@ permissions:
 
   **Reference:** [GitHub documentation: Webhook events and payloads](https://docs.github.com/en/webhooks/webhook-events-and-payloads).
 - **`Configure AWS credentials`** identifies the step that establishes AWS access for the subsequent ECR and EKS operations.
-- **`uses: aws-actions/configure-aws-credentials@v6`** invokes the AWS Credentials action, which uses **GitHub OIDC** to request temporary AWS credentials through AWS STS. This avoids storing long-lived AWS access keys in GitHub.
-- **`role-to-assume`** specifies the **DEV deployment IAM role** to assume, with its ARN retrieved from the GitHub Actions variable `AWS_EKS_DEPLOY_ROLE_ARN_DEV`. The role's **OIDC trust policy** determines whether this workflow is authorised to assume it, while its attached IAM policies determine the AWS permissions granted.
+- **`uses: aws-actions/configure-aws-credentials@v6`** invokes the AWS Credentials action, which uses **GitHub OIDC** to request temporary AWS credentials through Amazon STS. This avoids storing long-lived AWS access keys in GitHub.
+- **`role-to-assume`** specifies the **DEV deployment IAM role** to assume, with its ARN retrieved from the GitHub Actions variable `AWS_EKS_DEPLOY_ROLE_ARN`. The role's **OIDC trust policy** determines whether this workflow is authorised to assume it, while its attached IAM policies determine the AWS permissions granted.
 - **`aws-region`** specifies the AWS region, retrieved from the `AWS_REGION` GitHub Actions variable. The action makes the region available to subsequent AWS CLI and SDK operations.
 
 > **Important:** The job-level `id-token: write` permission configured earlier allows GitHub Actions to request an OIDC token. It does not grant AWS access by itself. AWS must first validate the token against the IAM role's **trust policy** before issuing temporary credentials.
@@ -6035,14 +7009,16 @@ permissions:
   - **`imageDigest`** retrieves the digest associated with the matching image.
   - **`[0]`** selects the first matching image digest.
 
-  Unlike our earlier `contains(join(...))` expression, `ends_with()` checks the **end of each individual tag**, making the matching more precise. This lookup relies on the tagging convention established by our CI workflow.
-
 - **`--output json | tr -d '"'`:** Returns the digest in JSON format and removes the surrounding quotation marks, leaving a clean digest value for use in subsequent commands.
 - **Digest validation:** The `if` condition checks whether either digest is empty or `null`. If either image cannot be found, the script exits with a **non-zero status**, preventing deployment with an incomplete set of images. If an AWS CLI command itself fails, `set -euo pipefail` also stops the script.
 - **`vars.AWS_ACCOUNT_ID` and `vars.AWS_REGION`:** Retrieve the AWS account ID and region from GitHub Actions variables. Combined with the repository name and resolved digest, they form the complete ECR image reference.
 - **`GITHUB_ENV`:** We write the resolved backend and frontend image references to this special GitHub Actions environment file. Unlike the `env` block above, which makes an existing value available to the current step, writing to `GITHUB_ENV` makes **dynamically generated values available to subsequent steps in the same job**.
   > **Note:** `GITHUB_ENV` is a **special environment file provided by GitHub Actions**. Writing a `NAME=VALUE` entry to this file makes that environment variable available to **all subsequent steps in the same job**. It is useful for passing dynamically generated values between steps without having to repeat their definitions. The value is **not available in the step that writes it**, only in subsequent steps.
   > echo "BACKEND_IMAGE=123456789.dkr.ecr.ap-south-1.amazonaws.com/cwvj-mega-backend@sha256:..." >> "$GITHUB_ENV"
+
+  > **Note:** We could also use **step outputs (`GITHUB_OUTPUT`)** to pass these dynamically generated image references to subsequent steps instead of using `GITHUB_ENV`. Since we've already covered how to define and consume outputs in our CI workflow, I wanted to demonstrate another approach here.
+  >
+  > However, `GITHUB_ENV` is limited to **subsequent steps within the same job**. It cannot be used to share values across jobs. If another job needs these values, use **Job Outputs** by exposing the step outputs through `jobs.<job_id>.outputs` and consuming them through the `needs` context.
 
 For example, a complete backend image reference follows this format:
 
@@ -6076,8 +7052,31 @@ The actual account ID, region, and digest are populated by the workflow.
 ```
 
 - **`Configure kubectl`** identifies the step that prepares the runner to communicate with our EKS cluster.
-- **`aws eks update-kubeconfig`** retrieves the cluster connection details from Amazon EKS and updates the runner's local Kubernetes configuration file (`~/.kube/config`). This creates a Kubernetes context that subsequent `kubectl` commands can use to communicate with the specified cluster.
+
+- **Preinstalled tools:** Our `ubuntu-26.04` GitHub-hosted runner already includes both the **AWS CLI** and **kubectl**, which is why we can execute these commands without installing them separately. GitHub maintains the software included in its runner images.
+
+- **`aws eks update-kubeconfig`** retrieves the cluster connection details from Amazon EKS and **creates or updates** the runner's local Kubernetes configuration file (`~/.kube/config`). This file contains the cluster endpoint, certificate authority data, and authentication configuration required by `kubectl`. It also creates a Kubernetes context and sets it as the current context, which subsequent `kubectl` commands use to communicate with the specified cluster.
+
+- **AWS credentials and permissions:** The AWS CLI uses the **temporary AWS credentials issued by STS** when our `configure-aws-credentials` action assumed the deployment IAM role earlier in the workflow. Our role's permissions policy includes the **`eks:DescribeCluster`** action, which allows the AWS CLI to retrieve the cluster connection details.
+
 - **`--name` and `--region`** identify the EKS cluster and the AWS region in which it resides. Both values are retrieved directly from GitHub Actions variables.
+
+  > **Note:** The `aws eks update-kubeconfig` command succeeds because the IAM role assumed by our GitHub Actions workflow has the required **`eks:DescribeCluster` permission** in its permissions policy. One of the policy statements explicitly allows this action against our EKS cluster:
+  >
+  > ```json
+  > {
+  >   "Sid": "DescribeEKSCluster",
+  >   "Effect": "Allow",
+  >   "Action": "eks:DescribeCluster",
+  >   "Resource": "arn:aws:eks:ap-south-1:497613475050:cluster/cwvj-mega-demo-eks"
+  > }
+  > ```
+  >
+  > This permission allows the AWS CLI to retrieve the EKS cluster's connection details and configure the local kubeconfig. However, it does **not** grant permission to create or modify Kubernetes resources. When `kubectl` communicates with the cluster, EKS authenticates the IAM role using AWS IAM credentials. Our previously configured **EKS Access Entry** maps this role to the Kubernetes deployment group, while the **namespace-scoped RBAC configuration** determines which Kubernetes operations that group is authorized to perform.
+
+  > **Note:** If the kubeconfig file does not already exist, `aws eks update-kubeconfig` creates it at `~/.kube/config` by default. If an existing file is present, it merges or updates the configuration instead. On our fresh GitHub-hosted runner, we would normally expect this file to be created during this step.
+
+
 - **`Prepare DEV manifests`** identifies the step that populates our Kubernetes manifests with environment-specific values before deployment.
 - **`sed -i`** performs in-place replacements in the specified manifest files on the runner. The `-e` options allow us to apply multiple replacement expressions in a single command. We use `|` as the delimiter instead of `/` because container image references contain forward slashes.
 - **Backend manifest:** Replaces `__BACKEND_IMAGE__` with the digest-based image reference resolved in the previous step, and `__DB_NAME__` with the database name from the DEV GitHub Environment.
@@ -6176,7 +7175,7 @@ Create `.github/workflows/03-create-pr.yaml` using the `workflow_call` trigger. 
 **File:** `.github/workflows/03-create-pr.yaml`
 
 ```yaml
-name: CWVJ PR | Create Pull Request
+name: CWVJ PR | Create Pull Request (Reusable)
 
 on:
   workflow_call:
@@ -6223,7 +7222,7 @@ jobs:
 #### Explanation
 
 ```yaml
-name: CWVJ PR | Create Pull Request
+name: CWVJ PR | Create Pull Request (Reusable)
 
 on:
   workflow_call:
@@ -6237,10 +7236,11 @@ on:
 ```
 
 - **`name`** defines the workflow's display name in the GitHub Actions UI.
-- **`workflow_call`** makes this workflow a **reusable workflow**. Unlike our CI and DEV deployment workflows, which are triggered by repository events, this workflow is designed to be invoked by another GitHub Actions workflow. This allows us to separate PR creation logic into its own workflow and reuse it wherever required.
+- **`workflow_call`** makes this workflow a **reusable workflow**. Unlike our CI workflow, which is triggered by qualifying `push` events or a `workflow_dispatch` event (initiated through the GitHub UI, CLI, or REST API), and our DEV deployment workflow, which is triggered when the CI workflow completes using `workflow_run`, this workflow is designed to be invoked explicitly by another GitHub Actions workflow. This allows us to separate PR creation logic into its own workflow and reuse it wherever required.
 - **`inputs`** defines the information that must be supplied by the **calling workflow** when invoking this reusable workflow. These inputs act as parameters, allowing the reusable workflow to operate on the branch and commit supplied by its caller.
-- **`head_branch`** represents the source development branch from which the Pull Request will be created. It will receive values such as `feature/payment-integration` from the DEV deployment workflow.
-- **`head_sha`** represents the **exact commit SHA successfully deployed to DEV**. We pass this separately so that the reusable workflow can verify the deployed commit before creating the PR.
+- **`head_branch`** represents the source feature branch that triggered the upstream CI workflow. In our project, this is `feature/initial-ci`. It is the branch from which the Pull Request will be created.
+
+- **`head_sha`** represents the **exact commit SHA associated with the upstream CI run** and deployed to DEV. We pass it separately so the reusable workflow can verify the deployed commit before creating the Pull Request.
 - **`required: true`** ensures that the calling workflow must provide both inputs. The reusable workflow cannot be invoked without them.
 - **`type: string`** specifies that both inputs must be supplied as strings.
 
@@ -6268,17 +7268,21 @@ jobs:
 
 - **`runs-on: ubuntu-26.04`** selects a GitHub-hosted runner using Ubuntu 26.04. Specifying the OS release keeps it consistent with our other workflows instead of relying on the moving `ubuntu-latest` label. The hosted runner image itself can still receive updates.
 
-- **`permissions`** defines the access scopes granted to the automatically generated **`GITHUB_TOKEN`** for this job:
+- **`permissions`** defines the access permissions granted to the automatically generated **`GITHUB_TOKEN`** for this job:
   - **`contents: read`** allows the token to read repository contents. This is required by `actions/checkout` to check out the source branch.
   - **`pull-requests: write`** allows the token to create and update Pull Requests through the GitHub API. We need this permission because the job uses the GitHub CLI (`gh`) to create or update the PR.
 
-  > **Why job-level permissions?** We define these permissions within the job rather than at the workflow level because **only this job needs them**. This follows the principle of least privilege and avoids granting unnecessary access to other jobs if the reusable workflow is expanded later.
+  > **Important:** When we explicitly specify individual permissions, all permissions that are not listed are automatically set to **`none`**. Therefore, our job receives only the two permissions it needs, following the **principle of least privilege**.
 
-  > **GitHub Token vs. OIDC:** Here, we use **`GITHUB_TOKEN`**, not GitHub OIDC. Both are used in GitHub Actions, but they serve different purposes. In our earlier AWS authentication workflow, `id-token: write` allowed the job to request a GitHub OIDC token, which AWS STS exchanged for temporary AWS credentials. Here, the job uses `GITHUB_TOKEN` to authenticate directly with GitHub and perform repository operations permitted by its assigned scopes.
+  > **Why job-level permissions?** We define these permissions within the job rather than at the workflow level because **only this job needs them**. This allows different jobs to have different permission levels without granting unnecessary access to other jobs.
 
-  > **Important:** These permissions do not grant the Ubuntu runner unrestricted access. They define what the job's `GITHUB_TOKEN` can do. Steps running on the runner can use this token to perform the permitted GitHub operations. We explicitly provide it to the GitHub CLI through the `GH_TOKEN` environment variable.
+  > **GitHub Token vs. OIDC:** Here, we use **`GITHUB_TOKEN`**, not GitHub OIDC. Both are used in GitHub Actions, but they serve different purposes. In our earlier AWS authentication workflow, `id-token: write` allowed the job to request a GitHub OIDC token, which Amazon STS exchanged for temporary AWS credentials. Here, the job uses `GITHUB_TOKEN` to authenticate directly with GitHub and perform repository operations permitted by its assigned permissions.
 
-  > **Caller workflow:** Because this is a reusable workflow, the calling job must also grant the required permissions. The called workflow cannot elevate permissions beyond those granted by its caller. We therefore define the required permissions in both places.
+  > **Important:** These permissions do not restrict the Ubuntu runner itself or give it unrestricted access. They define what the job's **`GITHUB_TOKEN` can do**. Steps running on the runner can use this token to perform the permitted GitHub operations. We explicitly provide it to the GitHub CLI through the `GH_TOKEN` environment variable.
+
+  > **Caller workflow:** Because this is a reusable workflow, the calling workflow must grant the required permissions through the permissions block of the job that invokes it. The called workflow **cannot elevate permissions beyond those granted by its caller**; it can only retain or reduce them. In our implementation, we explicitly declare the required permissions in both places to make the permission requirements clear and maintain least-privilege access.
+
+  > **Repository setting:** GitHub also provides a repository-level setting that controls whether workflows can create or approve Pull Requests. Navigate to **Repository Settings → Actions → General → Workflow permissions** and enable **Allow GitHub Actions to create and approve pull requests**. Without this setting, `pull-requests: write` alone may not be sufficient to create a PR using `GITHUB_TOKEN`.
 
 
 ---
@@ -6291,32 +7295,64 @@ steps:
       ref: ${{ inputs.head_branch }}
 ```
 
+- **`steps`** defines the sequence of operations performed by the job. Steps execute sequentially on the same runner. Here, we first check out the source branch before performing subsequent verification or PR creation operations.
 
+- **`name: Check out the deployed branch`** provides a human-readable name for this step, displayed in the GitHub Actions interface.
 
-- **`steps`** defines the **sequence of operations** performed by the job. We first retrieve the **source branch** and then verify that it still points to the **commit successfully deployed to DEV**.
+- **`uses: actions/checkout@v7`** invokes the official Checkout action to retrieve the repository contents onto the runner, under `${{ github.workspace }}`. By default, the action uses the automatically generated **`GITHUB_TOKEN`** (available through `${{ github.token }}`) to authenticate the checkout operation. This requires the token to have **`contents: read`** permission.
 
-- **`Check out the deployed branch`** identifies the step that retrieves the **source branch** supplied by the calling workflow.
+- **`ref: ${{ inputs.head_branch }}`** specifies which branch to check out. The value comes from the **`head_branch` input** supplied by the calling DEV deployment workflow. Since we're passing a branch name, the action checks out the branch's **latest commit at the time of checkout**.
 
-- **`uses: actions/checkout@v7`** invokes the **Checkout action** to retrieve the repository contents onto the runner. The action uses the automatically generated **`GITHUB_TOKEN`** to authenticate the checkout operation.
-
-- **`ref: ${{ inputs.head_branch }}`** specifies **which branch to check out**. The value comes from the **`head_branch` input** supplied by the DEV deployment workflow.
-
+> **Important:** Checking out `head_branch` retrieves the branch's **current commit**, not necessarily the commit that was successfully deployed to DEV. We must compare the checked-out commit SHA (`git rev-parse HEAD`) with the **original deployed commit SHA** passed by the calling workflow (for example, through a separate `head_sha` input). If they differ, the source branch has advanced since deployment. This distinction allows us to verify that we're creating a PR from the same source revision that was successfully deployed to DEV.
 
 ---
 
 ```yaml
-  - name: Verify deployed commit
-    env:
-      DEPLOYED_SHA: ${{ inputs.head_sha }}
-    run: test "$(git rev-parse HEAD)" = "$DEPLOYED_SHA"
+- name: Verify deployed commit
+  env:
+    DEPLOYED_SHA: ${{ inputs.head_sha }}
+  run: test "$(git rev-parse HEAD)" = "$DEPLOYED_SHA"
 ```
 
-- **`Verify deployed commit`** identifies the step that validates whether the source branch still points to the commit deployed to DEV.
-- **`DEPLOYED_SHA`** receives the full commit SHA supplied through the `head_sha` input. We expose it as a step-level environment variable rather than directly interpolating the input into the shell command.
-- **`git rev-parse HEAD`** retrieves the full SHA of the commit currently checked out on the runner.
-- **`test "$(git rev-parse HEAD)" = "$DEPLOYED_SHA"`** compares the checked-out commit SHA with the SHA received from the DEV deployment workflow. If they match, the command succeeds and the workflow proceeds. If they differ, the command exits with a non-zero status, failing the step and stopping the job.
+- **`Verify deployed commit`** identifies the step that validates whether the source branch still points to the commit successfully deployed to DEV.
+- **`DEPLOYED_SHA`** receives the full commit SHA passed through the `head_sha` input by the calling DEV deployment workflow. We store it in an environment variable so we can use it safely in our shell command.
+- **`git rev-parse HEAD`** retrieves the full commit SHA of the commit currently checked out on the runner.
+  - **`HEAD`** refers to the commit currently checked out.
+  - **`git rev-parse`** retrieves the SHA of the specified commit.
+- **`test "$(git rev-parse HEAD)" = "$DEPLOYED_SHA"`** compares the checked-out commit SHA with the SHA received from the DEV deployment workflow.
+  - If both SHAs match, the command succeeds and the workflow proceeds.
+  - If they differ, the command fails, and subsequent steps in the job are skipped.
 
-> **Important:** This validation prevents us from creating a Pull Request for a newer commit that has not successfully passed through DEV. If the development branch advances before this workflow executes, the mismatch causes the workflow to fail.
+> **Production Insight – Ensuring Deployment-to-PR Consistency:** We want to create or update a Pull Request only when the **checked-out source revision matches the exact commit that successfully passed CI and was deployed to DEV**. However, GitHub Pull Requests reference **branches, not individual commit SHAs**. The `gh pr create` command we use in the next step accepts a branch through its `--head` argument; it does not provide an option to supply a specific commit SHA.
+>
+> Therefore, we verify that the **checked-out commit matches the deployed commit** before creating or updating the PR. This allows us to retain the original feature branch without introducing another branch-management mechanism. A **dedicated promotion branch** pointing to the deployed SHA is another possible approach, but it introduces additional branch creation and management. For our project, SHA verification provides a **simpler, production-oriented safeguard** while keeping the workflow straightforward.
+
+> **Important:** This is a **point-in-time verification**; it does not lock the remote feature branch. A new commit pushed after checkout can advance the branch and subsequently appear in the PR. For stricter production controls, enforce the required **CI status checks and successful deployment of the latest PR head commit** before allowing it to merge.
+
+---
+
+**What happens if the deployed commit doesn't match the checked-out commit?**
+
+Consider the following scenario:
+
+1. **Commit A** is pushed to the development branch. It successfully passes CI and is deployed to DEV.
+2. Before the PR workflow executes, a developer pushes **Commit B** to the same branch.
+3. This new push triggers another CI run, provided it matches our configured branch and path filters.
+4. Meanwhile, the PR workflow triggered by the successful DEV deployment of Commit A checks out the latest branch state, which is now Commit B.
+5. However, `DEPLOYED_SHA` still contains Commit A because that is the commit successfully deployed to DEV.
+6. The comparison fails because the two commit SHAs don't match. Consequently, the current PR workflow run fails at the verification step and skips the subsequent PR creation or update steps.
+
+**What happens next?**
+
+- Commit B continues through its own CI execution.
+- If CI succeeds, the DEV deployment workflow is triggered and deploys Commit B.
+- Once DEV deployment succeeds, it invokes the reusable PR workflow again, passing the new `head_branch` and `head_sha`.
+- This time, both `git rev-parse HEAD` and `DEPLOYED_SHA` resolve to **Commit B**, so the comparison succeeds and the workflow proceeds with PR creation or update.
+- If CI or DEV deployment fails, Commit B does not proceed to the PR creation stage.
+
+> **Important:** This validation ensures that our PR workflow proceeds only when the **checked-out branch matches the exact commit successfully deployed to DEV**. If the branch advances before verification, the workflow fails rather than creating or updating a PR based on a newer, unverified revision. The newer commit must complete its own CI and DEV deployment cycle before the workflow proceeds again.
+
+> **Note:** This check does not lock the source branch. GitHub automatically includes subsequent commits pushed to the same branch in an existing Pull Request. Therefore, if a PR already exists, a newer commit can appear in that PR even before completing its CI and DEV deployment cycle. Our verification controls when this workflow creates or updates a PR, but it does not pin an existing PR to a particular commit. For stricter production controls, enforce successful CI checks and DEV deployment requirements for the **latest PR head commit** before allowing it to merge.
 
 ---
 
@@ -6335,29 +7371,41 @@ steps:
 - **`Create or update Pull Request`** identifies the step responsible for creating a Pull Request targeting `main` after the deployed commit has been successfully validated. We use the GitHub CLI to automate this operation rather than creating a PR manually.
 
 - **`GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}`** makes the automatically generated **`GITHUB_TOKEN`** available to the GitHub CLI through the `GH_TOKEN` environment variable. The CLI recognizes this variable and uses the token to **authenticate with GitHub** when performing Pull Request operations.
-
-  We do not need to create or maintain a separate **Personal Access Token (PAT)**. The permissions assigned to this job determine what the token can do. In our case, **`pull-requests: write`** allows it to create and update Pull Requests.
+  - We do not need to create or maintain a separate **Personal Access Token (PAT)**.
+  - The effective permissions assigned to the token determine what it can do. In our case, **`contents: read`** allows `actions/checkout` to retrieve repository contents, while **`pull-requests: write`** allows the workflow to create and update Pull Requests.
 
 - **`HEAD_BRANCH` and `HEAD_SHA`** receive the **source branch** and **exact commit SHA** from the reusable workflow inputs. We expose them as **step-level environment variables** so they can be referenced inside the shell commands without directly embedding GitHub expressions in the script. We also quote these variables when using them in commands.
+  - **`HEAD_BRANCH`** identifies the source branch used to create or update the PR.
+  - **`HEAD_SHA`** identifies the commit successfully deployed to DEV. We include it in the PR description for traceability; it is not used to select the PR's source revision.
 
 - **`gh pr create`** uses the **GitHub CLI** to create a Pull Request. It needs the following arguments:
-  - **`--head`** specifies the source development branch containing the application changes.
-  - **`--base`** specifies `main` as the target branch. In other words, we want to merge the changes from the development branch into `main`.
+  - **`--head`** specifies the source branch containing the application changes.
+  - **`--base`** specifies `main` as the target branch. In other words, we want to merge the changes from the source branch into `main`.
   - **`--title`** defines the Pull Request title using the source branch name.
-  - **`--body`** provides the Pull Request description. We record the **commit SHA successfully deployed to DEV** so reviewers can identify which commit passed the deployment and smoke test. The description also requests human review before merging.
+  - **`--body`** provides the Pull Request description. We record the **commit SHA successfully deployed to DEV** so reviewers can identify which revision passed the deployment process. The description also asks reviewers to review the changes before merging. This is a message in the description, not a formal reviewer assignment.
 
-- **`|| gh pr edit`** provides a fallback when the PR creation command fails. The intention is to handle the situation where an **open PR already exists for the source branch**. Instead of attempting to create another PR, the workflow updates the existing PR's description with the latest successfully deployed commit SHA.
+- **`|| gh pr edit`** provides a fallback when the PR creation command fails. Its purpose is to handle situations where an **open PR already exists for the same source branch**, rather than creating a duplicate PR.
 
+  - **Example 1: A subsequent commit to the same branch.** A developer pushes changes to `feature/payment`. After successful DEV deployment, the workflow creates a PR from `feature/payment` to `main`. Later, another commit is pushed to **the same branch** (possibly by another developer). Once it also passes CI and DEV deployment, the workflow attempts to create a PR again. Since an open PR for `feature/payment` already exists, the creation command fails and the fallback updates the existing PR.
 
-  > **How does this work?** GitHub associates a Pull Request with its **source branch**. When additional commits are pushed to that branch, GitHub automatically **incorporates those commits into the existing PR**. We do not need to create a new PR for every commit. Our workflow updates the PR description to record the **latest commit that has successfully passed DEV deployment**.
+  - **Example 2: An existing PR is still awaiting review.** A PR for `feature/payment` is already open, but nobody has reviewed it yet. Another commit is pushed to the same branch and successfully completes CI and DEV deployment. The workflow updates the existing PR instead of creating another one.
 
+  - **What if the commit is on a different branch?** For example, if the next changes are pushed to `feature/user-profile`, the workflow creates a **new PR** because there is no existing PR for that source branch.
 
-  > **Important:** The `||` operator executes the fallback command whenever `gh pr create` returns a **non-zero exit code**, not exclusively when a PR already exists. Other possible errors include **insufficient permissions** to create a PR, an **invalid or unavailable source or target branch**, **no changes to compare between the branches**, or a **GitHub API or network failure**. This keeps our implementation simple, but it is important to understand that **all these failures will also trigger the edit attempt**. A more defensive implementation could check for an existing PR explicitly before deciding which command to execute.
+  - **`gh pr edit "$HEAD_BRANCH"`** identifies the existing PR using its source branch.
+  - **`--body`** replaces the existing PR description with the updated deployment information; it does not append to the existing description.
 
+  - **Important: The `||` operator executes the fallback whenever `gh pr create` returns a non-zero exit code, not exclusively when a PR already exists.** Other possible causes include:
+    - **Insufficient permissions:** `GITHUB_TOKEN` does not have `pull-requests: write` permission, or the repository settings do not allow GitHub Actions to create pull requests.
+    - **Branch issues:** The source branch has been deleted or is unavailable, or the target branch does not exist.
+    - **No changes to compare:** There are no commits between the source and target branches to include in a PR.
+    - **Authentication or API errors:** GitHub CLI cannot authenticate, the GitHub API request fails, or a network issue interrupts the request.
 
-  > **Production Insight:** Because an existing PR automatically follows its source branch, a **newly pushed commit can appear in the PR before its DEV deployment finishes**. Reviewers should therefore ensure the **latest changes have passed DEV deployment** before approving and merging. **Branch protection and required checks** can provide additional safeguards against merging unvalidated changes.
+    The fallback is attempted in all these cases too. If `gh pr edit` also fails, the workflow step fails. However, **if the edit succeeds, the overall step reports success**, potentially hiding the original PR creation error.
 
-  > **Security Insight:** We use the automatically generated **`GITHUB_TOKEN`** instead of maintaining a **long-lived Personal Access Token (PAT)**. Combined with the narrowly scoped **`contents: read`** and **`pull-requests: write`** permissions, this provides a simpler way to automate repository operations while following the **principle of least privilege**.
+> **How does this work?** GitHub associates a Pull Request with its **source branch**. Any new commits pushed to that branch automatically appear in the existing PR; a new PR is not required. Our workflow updates the PR description with the **SHA of the commit that successfully completed DEV deployment**.
+
+> **Production Insight:** Since an existing PR automatically follows its source branch, a **new commit can appear in the PR before its DEV deployment completes**. Before merging, ensure the **latest PR commit** has passed CI and DEV deployment. Use branch protection and required status checks to prevent unvalidated commits from being merged; checks must pass against the latest commit.
 
 ---
 
@@ -6405,13 +7453,15 @@ create-pull-request-job:
 
   Remember, our DEV deployment job already includes the **Kubernetes rollout checks and application smoke test**. Therefore, the PR creation workflow is invoked only after the deployment and smoke test succeed. If the deployment job **fails or is skipped**, this job is also skipped by default.
 
-- **`permissions`** specifies the permissions granted to the automatically generated **`GITHUB_TOKEN`** for this calling job. Since this job invokes a reusable workflow that creates and updates Pull Requests, we explicitly grant the permissions it requires:
-  - **`contents: read`** allows the reusable workflow to check out the repository contents and verify the deployed commit.
+- **`permissions`** defines the access granted to the automatically generated **`GITHUB_TOKEN`** for this job and the reusable workflow it invokes. Although the calling job does not perform the repository checkout or PR operations itself, GitHub **passes its token permissions to the called workflow**. We explicitly define these permissions here to ensure that the reusable workflow receives **only the access it needs**.
+  - **`contents: read`** allows the `actions/checkout` step inside the reusable workflow to access the repository contents. This is required to check out the source branch and verify the deployed commit.
   - **`pull-requests: write`** allows the reusable workflow to **create and update Pull Requests** through the GitHub API.
 
-  > **Important:** We define these permissions at the **job level** because only this job needs them. The calling job grants the required permissions to the called workflow, and the called workflow **cannot elevate them beyond what the caller grants**. We have also defined the required permissions at the job level inside `03-create-pr.yaml`. Both definitions work together to ensure the called job receives only the access it needs.
+  > **Important:** The called workflow **cannot increase the permissions granted by the calling job**. Any permissions not explicitly listed here are set to `none`.
 
-  > **GitHub Token vs. OIDC:** We are using **`GITHUB_TOKEN`**, not GitHub OIDC, for this operation. Unlike our earlier AWS authentication, which used OIDC to obtain temporary AWS credentials through AWS STS, this job authenticates directly with GitHub using **`GITHUB_TOKEN`** to perform repository operations.
+  > The same permissions are also defined in the reusable workflow. **This duplicate permissions block is optional and can be removed** because the calling workflow already grants the required permissions. We retain it to explicitly document the permissions required by the reusable workflow.
+
+  > **GitHub Token vs. OIDC:** We are using **`GITHUB_TOKEN`**, not GitHub OIDC, for this operation. Unlike our earlier AWS authentication, which used OIDC to obtain temporary AWS credentials through Amazon STS, this job authenticates directly with GitHub using **`GITHUB_TOKEN`** to perform repository operations.
 
 - **`uses: ./.github/workflows/03-create-pr.yaml`** invokes the **reusable workflow** created in Task 1. The relative path points to the workflow file within the same repository.
 
@@ -6544,7 +7594,33 @@ GRANT USAGE, CREATE ON SCHEMA public TO cwvj_prod_app_user;
 
 ---
 
-### Task 2: Create the Automated PROD Deployment Workflow
+### Task 2: Configure GitHub Actions Variables for PROD Deployment
+
+Before configuring the PROD deployment workflow, we need to create two **GitHub environment variables** that identify the production database and the IAM role GitHub Actions will assume for production deployment.
+
+**1. Create the PROD environment variables**
+
+Navigate to **GitHub Repository → Settings → Environments → prod → Environment variables** and create the following variables:
+
+| Variable Name | Value |
+|---|---|
+| `DB_NAME` | `cwvj_prod_db` |
+| `AWS_EKS_DEPLOY_ROLE_ARN` | `arn:aws:iam::497613475050:role/CWVJGitHubActionsEKSDeployProdRole` |
+
+Since our PROD deployment job references `environment: prod`, GitHub makes these variables available through the `vars` context.
+
+We can reference them using:
+
+- `${{ vars.DB_NAME }}`
+- `${{ vars.AWS_EKS_DEPLOY_ROLE_ARN }}`
+
+> **Note:** The `EKS_CLUSTER_NAME` and `AWS_REGION` variables configured at the repository level during DEV setup are shared with the PROD workflow. Both environments use the same EKS cluster and AWS region, so there is no need to create these variables again.
+>
+> Replace the example AWS account ID (`497613475050`) in the IAM role ARN with your own AWS account ID.
+
+---
+
+### Task 3: Create the Automated PROD Deployment Workflow
 
 Create `.github/workflows/04-deploy-prod.yaml` to automate application deployment to PROD after an eligible Pull Request targeting `main` is successfully merged. The workflow will validate that the PR was created by our automated PR workflow and that its latest commit matches the commit successfully deployed to DEV.
 
@@ -6769,22 +7845,16 @@ jobs:
   )
   ```
 
-  This is an important validation in our release process.
+  Our Stage 12 PR creation workflow records the **exact commit SHA deployed to DEV** in the Pull Request description. Here, we verify that the recorded SHA matches the current source branch's latest commit.
 
-  Recall that our Stage 12 PR creation workflow records the **exact commit SHA** in the Pull Request description after successful DEV deployment.
+  - **`github.event.pull_request.body`**: Contains the Pull Request description.
+  - **`github.event.pull_request.head.sha`**: Contains the latest commit SHA of the PR's source branch.
+  - **`contains()`**: Checks whether the PR description includes that commit SHA.
 
-  Here, we compare that recorded information with the latest commit SHA associated with the source branch of the Pull Request.
+  **How does this help?**
 
-  Let's understand the two properties:
-
-  - **`github.event.pull_request.body`** contains the Pull Request description.
-  - **`github.event.pull_request.head.sha`** contains the full commit SHA currently associated with the source branch of the Pull Request.
-
-  The **`contains()`** function checks whether the Pull Request description includes the current source commit SHA.
-
-  If the SHA is present, the condition evaluates to `true`, indicating that the current source commit matches the commit recorded by our DEV deployment automation.
-
-  If someone pushes additional commits to the development branch after the successful DEV deployment, the source branch's head SHA changes. Since the PR description still contains the previously deployed SHA, the condition evaluates to `false` until the updated commit successfully passes through DEV and the PR description is updated.
+  - **SHA matches:** The current source commit has been recorded as successfully deployed to DEV.
+  - **SHA does not match:** New commits may have been pushed after DEV deployment. The PR description still contains the previously deployed SHA, so the condition remains `false` until the updated commit passes through DEV and the PR description is updated.
 
   > **Important:** An existing Pull Request automatically incorporates new commits pushed to its source branch. Therefore, a PR can contain newer changes even though those changes have not yet passed through DEV. This SHA validation prevents such changes from being promoted to PROD based on an earlier successful DEV deployment.
 
@@ -6815,24 +7885,22 @@ The important difference here is how we check out the repository.
 
 - **`ref: ${{ github.event.pull_request.merge_commit_sha }}`** specifies the SHA of the commit resulting from the PR merge. We use this reference to retrieve the exact merged revision containing our production Kubernetes manifests.
 
+---
+
 **Why are we using `merge_commit_sha` instead of `head.sha`?**
 
-This is an important distinction between our DEV and PROD deployment workflows.
+The DEV and PROD workflows need to check out different commits because they serve different purposes.
 
-In the DEV workflow, we used:
+- **DEV deployment:** We use `github.event.workflow_run.head_sha` to check out the exact feature branch commit that passed CI. We need its Kubernetes manifests to deploy the application to DEV.
 
-```yaml
-ref: ${{ github.event.workflow_run.head_sha }}
-```
+- **PROD deployment:** After the Pull Request is merged, we need the **merged code from `main`**, including the changes integrated into the production branch. Therefore, we use `github.event.pull_request.merge_commit_sha`.
 
-There, our objective was to check out the exact development branch commit associated with the completed CI run. We needed its Kubernetes manifests for the DEV deployment.
+The two properties serve different purposes:
 
-In the PROD workflow, our objective is different. We need the **merged revision from `main`**, because that is our production code line and the source of truth for production Kubernetes manifests.
+- **`github.event.pull_request.merge_commit_sha`** identifies the resulting merge commit. We use it to check out the merged production code and its Kubernetes manifests.
+- **`github.event.pull_request.head.sha`** identifies the commit from the original feature branch. We use it to identify the application revision that was successfully deployed to DEV.
 
-Therefore, we use:
-
-- **`github.event.pull_request.merge_commit_sha`** to retrieve the merged production revision and its Kubernetes manifests.
-- **`github.event.pull_request.head.sha`** to identify the original application commit whose images were successfully built and deployed to DEV.
+**Key takeaway:** `head.sha` identifies the original feature branch commit, whereas `merge_commit_sha` identifies the resulting merged revision used for production deployment.
 
 > **Important:** We use two different commit references deliberately. `merge_commit_sha` identifies the merged revision containing our production manifests, while `head.sha` identifies the original application commit whose images were successfully deployed to DEV. With our configured squash-merge strategy, these two SHAs are expected to be different.
 
@@ -6852,7 +7920,7 @@ The important difference is the IAM role we assume.
 
 - **`role-to-assume`** specifies the PROD deployment IAM role, with its ARN retrieved from the GitHub Actions variable `AWS_EKS_DEPLOY_ROLE_ARN_PROD`.
 
-- In DEV, we used `AWS_EKS_DEPLOY_ROLE_ARN_DEV`. Here, we use a **separate production role** to maintain environment-specific AWS access.
+- In DEV, we used `AWS_EKS_DEPLOY_ROLE_ARN`. Here, we use a **separate production role** to maintain environment-specific AWS access.
 
   > **Important:** Using separate IAM roles helps establish an independent security boundary between DEV and PROD. The DEV deployment role should not be used to deploy application resources into the production namespace. The respective IAM permissions, EKS access entries, and Kubernetes RBAC configurations determine the access granted to each role.
 
@@ -7135,16 +8203,21 @@ We also need to configure the `prod` GitHub Environment to introduce an independ
 
 ---
 
-#### 2.2 Configure the PROD GitHub Environment
+**2.2 Configure the PROD GitHub Environment**
 
 Our PROD deployment workflow references the `prod` GitHub Environment using `environment: prod`. We will use its protection rules to introduce a separate approval gate before the production deployment can proceed.
 
 1. Navigate to **Settings → Environments**.
 2. Open the existing `prod` environment.
 3. Under **Deployment protection rules**, configure the following:
-   - **Required reviewers:** Add `cloudwithvarjosh` as the required reviewer.
-   - **Prevent self-review:** Enable this option.
-   - **Allow administrators to bypass configured protection rules:** Disable this option by deselecting it.
+
+   - **Required reviewers:** Add `CloudWithVarJosh` as the required reviewer. This account will approve the **production deployment**, not the Pull Request itself.
+
+     The Pull Request is reviewed and merged separately using the `varunjoshi0404` account. When this account merges the PR, the `pull_request: closed` event triggers the PROD workflow. The workflow then pauses at the environment approval gate until `CloudWithVarJosh` approves the pending deployment.
+
+   - **Prevent self-review:** Enable this option to ensure that the account that initiated the workflow run cannot approve its own deployment. In our demonstration, this means `varunjoshi0404` cannot approve the production deployment.
+
+   - **Allow administrators to bypass configured protection rules:** Disable this option by deselecting it, ensuring that administrators cannot bypass the configured deployment approval requirement.
 
 4. Under **Deployment branches and tags**, select **Selected branches and tags**.
 5. Add the following allowed reference:
@@ -7159,14 +8232,19 @@ Our PROD deployment workflow references the `prod` GitHub Environment using `env
 >
 > Therefore, we only need `refs/pull/*/merge` in the PROD Environment's allowed deployment references. The `branches: main` condition in our PROD workflow already ensures that only Pull Requests targeting `main` can trigger this workflow.
 
+---
+
 **Why are we using two different GitHub accounts?**
 
-We have deliberately separated the two approval responsibilities:
+There are **three activities** in our production release process:
 
-- **`varunjoshi0404`:** Independently reviews, approves, and merges the Pull Request into `main`.
-- **`cloudwithvarjosh`:** Approves the subsequent production deployment through the `prod` GitHub Environment.
+- **PR review and approval:** `varunjoshi0404` independently reviews and approves the Pull Request.
+- **PR merge:** Both accounts technically have permission to merge the approved PR into `main`.
+- **Production deployment approval:** `cloudwithvarjosh` approves the deployment through the `prod` GitHub Environment.
 
-Since merging the Pull Request initiates the production workflow, enabling **Prevent self-review** ensures that the account initiating the deployment cannot approve that same deployment.
+> **Important:** The account that merges the PR triggers the PROD workflow through the `pull_request: closed` event. Since we have enabled **Prevent self-review**, that same account cannot approve the resulting production deployment.
+>
+> Therefore, based on our current configuration, **`varunjoshi0404` must merge the PR** so that `cloudwithvarjosh` can independently approve the production deployment. If `cloudwithvarjosh` merges the PR, they trigger the PROD workflow but cannot approve its deployment because we have enabled **Prevent self-review** in the `prod` environment. Since `cloudwithvarjosh` is also our **only configured required reviewer**, the deployment will remain pending until an eligible reviewer is available.
 
 > **Production Insight:** GitHub Environments provide an additional approval gate between a successful code merge and an actual production deployment. This allows us to enforce **independent release authorisation**, even after the code has passed CI and received the required Pull Request approval.
 
@@ -7225,34 +8303,17 @@ This is expected behaviour. Let's understand why.
 
 ---
 
-#### 3.3 Understand the Default Branch Requirement
+#### 3.3 Why Are the Other Workflows Not Visible?
 
-Our workflows use different GitHub Actions triggers, and each trigger determines when and how a workflow is executed.
+Currently, the **Actions** tab shows only `CWVJ CI | Build, Scan and Publish` because it is the only workflow we have added to `main`. The remaining workflows are still on `feature/initial-ci`.
 
-- **CI workflow (`01-ci.yaml`):** It uses the `push` event. Since its definition is already available in the repository and the feature branch push matches its trigger, GitHub executes CI normally.
-- **DEV deployment workflow (`02-deploy-dev.yaml`):** It uses the `workflow_run` event to listen for the completion of CI. GitHub requires a workflow using this event to exist on the **default branch** before it can be triggered. Since our DEV workflow is not yet available in `main`, GitHub does not execute it.
-- **Reusable PR workflow (`03-create-pr.yaml`):** It uses `workflow_call`, so it does not execute independently in response to a push. It must be invoked by another workflow. Our DEV deployment workflow is responsible for calling it after a successful deployment and smoke test.
-- **PROD deployment workflow (`04-deploy-prod.yaml`):** It listens for a `pull_request: closed` event targeting `main`. We have not yet created and merged an eligible Pull Request, so there is no event to trigger production deployment.
+- **DEV deployment (`02-deploy-dev.yaml`):** Uses `workflow_run`, which requires the downstream workflow file to exist on the **default branch (`main`)** before it can be triggered.
+- **Reusable PR (`03-create-pr.yaml`):** Uses `workflow_call` and is not triggered independently. It runs only when called by the DEV deployment workflow. Since the DEV workflow is not running yet, this workflow is not being called either.
+- **PROD deployment (`04-deploy-prod.yaml`):** Uses `pull_request: closed`. Unlike `workflow_run`, this event has no equivalent documented default-branch-only restriction. We will exercise it when our Pull Request is merged into `main`.
 
-**Why does GitHub impose this requirement?**
+> **Our Project:** Once all workflows are complete, we will temporarily disable branch protection on `main`, push the completed workflows and project changes directly to it, and then re-enable branch protection. We can then demonstrate the complete CI-to-DEV-to-PROD pipeline.
 
-The default branch acts as the trusted source for certain event-triggered workflows. This is particularly important for `workflow_run`.
-
-Unlike the upstream CI workflow, a workflow triggered through `workflow_run` can access **secrets and write permissions**, even when the upstream workflow does not have those privileges.
-
-Consider what could happen if an arbitrary feature branch could introduce a modified, privileged deployment workflow. An unreviewed change could attempt to expose secrets, misuse permissions, or initiate an unintended deployment.
-
-By requiring the `workflow_run` workflow definition to exist on the **default branch**, GitHub ensures that the event listener is sourced from the repository's trusted default branch rather than being introduced solely through an arbitrary feature branch.
-
-This is an important security guardrail, supported by other controls such as branch protection, Pull Request reviews, least-privilege permissions, IAM trust policies, and production environment approvals.
-
-There is another important detail in our implementation. We call `03-create-pr.yaml` from `02-deploy-dev.yaml` using a local reusable workflow reference:
-
-`./.github/workflows/03-create-pr.yaml`
-
-GitHub resolves a local reusable workflow from the **same commit as its calling workflow**. Therefore, once our DEV deployment workflow runs from `main`, its reusable PR workflow must also be available in that revision.
-
-> **Production Insight:** In an established production repository, we would **not normally encounter this situation**. The workflow definitions would already exist in `main` and would have been introduced through the **normal Pull Request review and merge process**. We are demonstrating this requirement because we deliberately built all three deployment automation workflows **before pushing them to GitHub**.
+> **Production Insight:** In an established repository, these workflow definitions would normally be introduced through the **standard Pull Request review and merge process** and already be available in `main` before subsequent feature, bugfix, and hotfix changes go through the deployment workflow.
 
 ---
 
@@ -7320,6 +8381,79 @@ Also verify that the supporting Kubernetes manifests are present under `kubernet
 
 ---
 
+#### 3.6 Trigger the CI and DEV Deployment Workflows
+
+Now that all completed workflow definitions are available in `main` and the `protect-main` ruleset is active again, we can trigger the automation with a fresh commit.
+
+Our CI workflow uses both **branch filters and path filters**. Therefore, the new commit must target a supported branch and modify at least one file matching the configured `paths` filters.
+
+1. Switch to the existing feature branch and make a small, harmless change to a file under `frontend/` or `backend/`. For example, update a text element in the frontend.
+
+   > **Important:** Do not modify only files outside the CI workflow's configured `paths` filters, such as the root `README.md`, because the CI workflow may not be triggered.
+
+2. Review, commit, and push your changes:
+
+   ```bash
+   # Switch to the existing feature branch.
+   git switch feature/initial-ci
+
+   # Review the changes before committing.
+   git status
+   git diff
+
+   # Stage the modified file (replace with the actual file path).
+   git add <changed-file>
+
+   # Commit the changes.
+   git commit -m "chore: trigger CI after workflow bootstrap"
+
+   # Push the new commit to the remote feature branch.
+   git push origin feature/initial-ci
+   ```
+
+3. Navigate to **Actions** in GitHub and verify the execution:
+   - **CI workflow:** The fresh push triggers `01-ci.yaml` on `feature/initial-ci`.
+   - **DEV deployment workflow:** After CI completes successfully, GitHub triggers `02-deploy-dev.yaml` from the default branch.
+   - **Reusable PR workflow:** After the DEV deployment and application smoke tests succeed, the DEV workflow invokes `03-create-pr.yaml` to create a Pull Request targeting `main`.
+
+**Expected Outcome:** The fresh push triggers CI, followed by the DEV deployment. Once the deployment and smoke tests succeed, the automation **creates a Pull Request targeting `main`**.
+
+---
+
+#### 3.7 Observe and Fix the DEV Deployment Failure
+
+After pushing the new commit, the CI workflow completed successfully and triggered our DEV deployment workflow. However, the **Deploy to DEV** job failed.
+
+1. Navigate to **Actions** in GitHub and open the failed `CWVJ Deploy | DEV` run.
+
+2. Under **Annotations**, you will find the following error:
+
+   `Branch "main" is not allowed to deploy to dev due to environment protection rules.`
+
+   **Why did this happen?**
+
+   Our CI workflow ran on `feature/initial-ci`, but GitHub handles workflows triggered by `workflow_run` differently. It runs the downstream workflow using the **default branch (`main`) as its branch reference**.
+
+   Our `dev` GitHub Environment only allows deployments from selected branches, and `main` was not included. GitHub therefore blocked the deployment.
+
+   > **Important:** This does not mean we are deploying application code from `main`. Our DEV workflow still checks out the exact commit from the original CI run using `github.event.workflow_run.head_sha`. We only need to allow `main` in the environment settings.
+
+    > **Remember:** This is also why, in the code checkout section of `02-deploy-dev.yaml`, we explicitly set `ref: ${{ github.event.workflow_run.head_sha }}`. Since GitHub runs the downstream workflow using `main` as its branch reference, we use this expression to ensure that **the application code is checked out from the original feature-branch commit**, not from `main`. The environment rule controls which branch is allowed to deploy; the checkout reference controls which application code gets deployed.
+
+3. Update the DEV environment's allowed deployment branches:
+
+   - Navigate to **Settings → Environments**.
+   - Open the `dev` environment.
+   - Under **Deployment branches and tags**, select **Selected branches and tags**.
+   - Add `main` to the allowed branches.
+   - Save the protection rules.
+
+4. Return to the failed DEV workflow run and select **Re-run all jobs** to retry the deployment with the updated environment rules.
+
+**Expected Outcome:** The DEV deployment job should now be allowed to proceed. The workflow will check out the original feature-branch commit and continue with the DEV deployment.
+
+---
+
 ### Task 4: Review and Merge the Pull Request
 
 Once the DEV deployment, automated PR creation, and PROD deployment workflows are configured and pushed to GitHub, we will perform a fresh end-to-end demonstration using a feature branch.
@@ -7328,7 +8462,7 @@ The automated PR creation workflow will open a Pull Request targeting `main` aft
 
 ---
 
-#### 2.1 Review the Pull Request
+#### 4.1 Review the Pull Request
 
 1. Sign in to GitHub using the personal account `varunjoshi0404`.
 2. Open the repository and navigate to the **Pull requests** tab.
@@ -7350,7 +8484,7 @@ In a regular application development environment, this same process would be use
 
 ---
 
-#### 2.2 Approve and Merge the Pull Request
+#### 4.2 Approve and Merge the Pull Request
 
 1. Open the **Review changes** option.
 2. Select **Approve** and submit the review.
@@ -7393,13 +8527,60 @@ Connect to the EKS cluster and verify the resources deployed in the `prod` names
 kubectl get deployments,pods,services -n prod -o wide
 ```
 
-Confirm that the backend and frontend Deployments are healthy, their Pods are running, and the expected **digest-based images** are deployed.
+**Verify the following:**
 
-Finally, access the production application and verify its functionality, including backend connectivity and database operations such as creating, reading, updating, and deleting user records.
+1. **Verify Deployment and Pod Health:** Confirm that both backend and frontend Deployments have their desired number of replicas available, all Pods are in the `Running` state, and their readiness checks are passing.
 
-> **Expected Outcome:** The PROD workflow completes successfully, the application is running in the `prod` namespace, and the same immutable container images used in DEV are deployed to production. Application functionality and database operations are also verified.
+2. **Verify Container Images:** Confirm that the expected **digest-based images** are deployed:
 
-> **Production Insight:** A successful deployment is more than applying Kubernetes manifests or getting healthy Pods. We must also verify **artifact identity, application availability, and functionality** to establish confidence in a production release.
+   ```bash
+   kubectl get pods -n prod \
+     -o custom-columns=NAME:.metadata.name,READY:.status.containerStatuses[*].ready,IMAGE:.spec.containers[*].image
+   ```
+
+3. **Verify Frontend Service and NodePort:** Check the frontend Service and its NodePort configuration:
+
+   ```bash
+   kubectl get service cwvj-frontend -n prod -o wide
+   kubectl get endpoints cwvj-frontend -n prod
+   ```
+
+   Confirm that the frontend Service is of type `NodePort`, exposes port **30081 (PROD)**, and has healthy endpoints associated with the frontend Pods.
+
+4. **Configure Worker Node Security Group:** Identify the **public IP address** of any accessible EKS worker node from the Amazon EC2 console. Locate the security group associated with the EKS worker nodes (typically named `eks-cluster-sg-cwvj-mega-demo-eks-1221592647`).
+
+   Under **Inbound rules**, allow the following **TCP ports**:
+
+   - **30080:** DEV application NodePort.
+   - **30081:** PROD application NodePort.
+
+   You can restrict the **Source** to **your public IP address (/32)** rather than allowing access from anywhere (`0.0.0.0/0`).
+
+5. **Access the Production Application:** Open the production application in a browser using the following URL:
+
+   ```text
+   http://<WORKER-NODE-PUBLIC-IP>:30081
+   ```
+
+   Verify that the **frontend application loads successfully** and that the user management interface is accessible.
+
+6. **Perform End-to-End Application Testing:** Verify application functionality by performing the following **CRUD operations**:
+   - **Create:** Create a new user.
+   - **Read:** Retrieve and view the user record.
+   - **Update:** Modify the user's details.
+   - **Delete:** Delete the user record.
+
+   Verify that the frontend successfully communicates with the backend API and that the corresponding **database operations** complete successfully.
+
+7. **Inspect Backend Logs:** Finally, inspect the backend logs for any application or database connectivity errors:
+
+   ```bash
+   kubectl logs deployment/cwvj-backend -n prod --tail=50
+   ```
+
+> **Expected Outcome:** The PROD workflow completes successfully, the application is running in the `prod` namespace, and the **same immutable container images** used in DEV are deployed to production. The frontend application is accessible through the **NodePort Service**, backend connectivity is established, and database operations are successfully verified through end-to-end CRUD testing.
+
+> **Production Insight:** A successful deployment is more than applying Kubernetes manifests or getting healthy Pods. We must also verify **artifact identity, application availability, service accessibility, and end-to-end functionality** to establish confidence in a production release.
 
 ---
 
